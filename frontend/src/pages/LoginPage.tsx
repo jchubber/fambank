@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 
 import { Link } from 'react-router-dom'
 import CreateAdminModal from '../components/CreateAdminModal'
+import Logo from '../components/Logo'
 
 interface Props {
   onLogin: (token: string, isChild: boolean) => void
@@ -95,7 +96,7 @@ export default function LoginPage({ onLogin, siteName, allowRegister = false }: 
     <div className="container">
       {needsAdmin && <CreateAdminModal onSubmit={handleCreateAdmin} />}
       <div className="logo-wrapper">
-        <img src="/unclejon.jpg" alt={siteName + ' Logo'} className="logo" />
+        <Logo alt={siteName + ' Logo'} className="logo" />
       </div>
       <h1>{siteName}</h1>
       Welcome to your bank! We're glad to have you here. Your grown-up should have given you a special access code to use to log in. Keep it secret - it's your key to your financial future!

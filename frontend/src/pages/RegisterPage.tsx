@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
+import Logo from '../components/Logo'
 
 interface Props {
   apiUrl: string
@@ -34,7 +35,7 @@ export default function RegisterPage({ apiUrl, siteName }: Props) {
   return (
     <div className="container">
       <div className="logo-wrapper">
-        <img src="/unclejon.jpg" alt={siteName + ' Logo'} className="logo" />
+        <Logo alt={siteName + ' Logo'} className="logo" />
       </div>
       <h1>Parent Registration</h1>
       <form onSubmit={handleSubmit} className="form">

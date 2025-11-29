@@ -5,6 +5,7 @@ import EditTransactionModal from '../components/EditTransactionModal'
 import LedgerTable, { type Transaction } from '../components/LedgerTable'
 import RunPromotionModal from '../components/RunPromotionModal'
 import AddParentModal from '../components/AddParentModal'
+import Logo from '../components/Logo'
 import { formatCurrency } from '../utils/currency'
 import { useToast } from '../components/ToastProvider'
 
@@ -105,7 +106,7 @@ export default function AdminPanel({ token, apiUrl, onLogout, siteName, currency
   return (
     <div className="container">
       <div className="logo-wrapper">
-        <img src="/unclejon.jpg" alt={`${siteName} Logo`} className="logo" />
+        <Logo alt={`${siteName} Logo`} className="logo" />
       </div>
       <h1>Admin Panel</h1>
       {settings && (

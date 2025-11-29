@@ -23,3 +23,7 @@ to-do.txt
 *.patch
 
 *.db
+
+# Custom branding files (user-configurable logos)
+frontend/public/bank-logo.png
+frontend/public/bank-logo-trans.png

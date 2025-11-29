@@ -1,5 +1,6 @@
 import { NavLink } from 'react-router-dom'
 import './Header.css'
+import Logo from './Logo'
 
 interface Props {
   onLogout: () => void
@@ -13,7 +14,7 @@ interface Props {
 export default function Header({ onLogout, isAdmin, isChild, siteName, onToggleTheme, theme }: Props) {
   return (
     <header className="header">
-      <img src="/unclejon.jpg" alt={`${siteName} Logo`} className="logo" />
+      <Logo alt={`${siteName} Logo`} className="logo" />
       <nav aria-label="Main navigation">
         <ul>
           {isChild ? (
