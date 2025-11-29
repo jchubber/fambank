@@ -1,8 +1,11 @@
 services:
   backend:
     build: ./backend
+    env_file:
+      - ./backend/.env
     environment:
       - TZ=America/Chicago
+      - SKIP_TESTS=true
     expose:
       - "8000"
     volumes:
