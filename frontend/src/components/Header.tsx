@@ -14,7 +14,7 @@ interface Props {
 export default function Header({ onLogout, isAdmin, isChild, siteName, onToggleTheme, theme }: Props) {
   return (
     <header className="header">
-      <Logo alt={`${siteName} Logo`} className="logo" />
+      <Logo alt={`${siteName} Logo`} className="logo" transparent={true} />
       <nav aria-label="Main navigation">
         <ul>
           {isChild ? (

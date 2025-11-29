@@ -35,7 +35,7 @@ export default function RegisterPage({ apiUrl, siteName }: Props) {
   return (
     <div className="container">
       <div className="logo-wrapper">
-        <Logo alt={siteName + ' Logo'} className="logo" />
+        <Logo alt={siteName + ' Logo'} className="logo" transparent={true} />
       </div>
       <h1>Parent Registration</h1>
       <form onSubmit={handleSubmit} className="form">

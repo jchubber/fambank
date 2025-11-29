@@ -106,7 +106,7 @@ export default function AdminPanel({ token, apiUrl, onLogout, siteName, currency
   return (
     <div className="container">
       <div className="logo-wrapper">
-        <Logo alt={`${siteName} Logo`} className="logo" />
+        <Logo alt={`${siteName} Logo`} className="logo" transparent={true} />
       </div>
       <h1>Admin Panel</h1>
       {settings && (

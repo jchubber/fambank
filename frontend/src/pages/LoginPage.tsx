@@ -96,7 +96,7 @@ export default function LoginPage({ onLogin, siteName, allowRegister = false }: 
     <div className="container">
       {needsAdmin && <CreateAdminModal onSubmit={handleCreateAdmin} />}
       <div className="logo-wrapper">
-        <Logo alt={siteName + ' Logo'} className="logo" />
+        <Logo alt={siteName + ' Logo'} className="logo" transparent={true} />
       </div>
       <h1>{siteName}</h1>
       Welcome to your bank! We're glad to have you here. Your grown-up should have given you a special access code to use to log in. Keep it secret - it's your key to your financial future!
