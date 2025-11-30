@@ -19,6 +19,9 @@ from app.crud import (
     get_children_by_user,
     post_transaction_update,
     get_child_user_link,
+    get_checking_account_by_child,
+    get_account_by_child_and_type,
+    calculate_available_balance,
 )
 from app.schemas import WithdrawalRequestCreate, WithdrawalRequestRead, DenyRequest
 
@@ -32,8 +35,44 @@ async def request_withdrawal(
     child: Child = Depends(get_current_child),
 ):
     """Children create a withdrawal request for parent approval."""
-    req = WithdrawalRequest(child_id=child.id, amount=data.amount, memo=data.memo)
-    return await create_withdrawal_request(db, req)
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    try:
+        account_type = data.account_type or 'checking'
+        logger.info(f"Withdrawal request: child_id={child.id}, amount={data.amount}, account_type={account_type}, memo={data.memo}")
+        
+        # College savings withdrawals are admin-only
+        if account_type == "college_savings":
+            raise HTTPException(status_code=403, detail="College savings withdrawals are admin-only")
+        
+        # Get the account and validate available balance
+        account = await get_account_by_child_and_type(db, child.id, account_type)
+        if not account:
+            logger.error(f"Account not found: child_id={child.id}, account_type={account_type}")
+            raise HTTPException(status_code=404, detail=f"{account_type} account not found")
+        
+        if account_type == "savings":
+            available = await calculate_available_balance(db, account.id)
+            logger.info(f"Savings account available balance: {available}")
+            if data.amount > available:
+                raise HTTPException(status_code=400, detail=f"Insufficient available balance. Available: ${available:.2f}")
+        else:
+            from app.crud import calculate_balance
+            balance = await calculate_balance(db, account.id)
+            logger.info(f"Checking account balance: {balance}")
+            if data.amount > balance:
+                raise HTTPException(status_code=400, detail="Insufficient balance")
+        
+        req = WithdrawalRequest(child_id=child.id, account_type=account_type, amount=data.amount, memo=data.memo)
+        result = await create_withdrawal_request(db, req)
+        logger.info(f"Withdrawal request created: id={result.id}")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating withdrawal request: {type(e).__name__}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @router.get("/mine", response_model=list[WithdrawalRequestRead])
@@ -79,8 +118,19 @@ async def approve_request(
         ):
             raise HTTPException(status_code=403, detail="Insufficient permissions")
 
+    account = await get_account_by_child_and_type(db, req.child_id, req.account_type)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    
+    # Validate available balance for savings accounts
+    if req.account_type == "savings":
+        available = await calculate_available_balance(db, account.id)
+        if req.amount > available:
+            raise HTTPException(status_code=400, detail=f"Insufficient available balance. Available: ${available:.2f}")
+    
     tx = Transaction(
         child_id=req.child_id,
+        account_id=account.id,
         type="debit",
         amount=req.amount,
         memo=req.memo,

@@ -50,10 +50,15 @@ async def accept_loan(
         raise HTTPException(status_code=404, detail="Loan not found")
     if loan.status != "approved":
         raise HTTPException(status_code=400, detail="Cannot accept")
+    from app.crud import get_checking_account_by_child
+    checking_account = await get_checking_account_by_child(db, child.id)
+    if not checking_account:
+        raise HTTPException(status_code=404, detail="Checking account not found")
     await create_transaction(
         db,
         Transaction(
             child_id=child.id,
+            account_id=checking_account.id,
             type="credit",
             amount=loan.amount,
             memo=f"Loan #{loan.id} disbursement",
@@ -222,10 +227,15 @@ async def record_payment(
         link = await get_child_user_link(db, current_user.id, loan.child_id)
         if not link or (PERM_MANAGE_LOAN not in link.permissions and not link.is_owner):
             raise HTTPException(status_code=403, detail="Insufficient permissions")
+    from app.crud import get_checking_account_by_child
+    checking_account = await get_checking_account_by_child(db, loan.child_id)
+    if not checking_account:
+        raise HTTPException(status_code=404, detail="Checking account not found")
     await create_transaction(
         db,
         Transaction(
             child_id=loan.child_id,
+            account_id=checking_account.id,
             type="debit",
             amount=data.amount,
             memo=f"Loan #{loan.id} payment",

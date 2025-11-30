@@ -16,7 +16,7 @@ class TransactionBase(BaseModel):
 
 
 class TransactionCreate(TransactionBase):
-    pass
+    account_id: Optional[int] = None
 
 
 class TransactionUpdate(BaseModel):
@@ -27,6 +27,7 @@ class TransactionUpdate(BaseModel):
 
 class TransactionRead(TransactionBase):
     transaction_id: int = Field(alias="id")
+    account_id: int
     timestamp: datetime
 
     class Config:

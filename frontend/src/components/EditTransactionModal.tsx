@@ -1,10 +1,27 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import type { Transaction } from "./LedgerTable";
+
+interface Account {
+  id: number;
+  account_type: string;
+  balance: number;
+  available_balance: number | null;
+  interest_rate: number;
+  lockup_period_days: number | null;
+}
+
+interface AccountsResponse {
+  checking: Account;
+  savings: Account;
+  college_savings: Account;
+  total_balance: number;
+}
 
 interface Props {
   transaction: Transaction;
   token: string;
   apiUrl: string;
+  childId: number;
   onClose: () => void;
   onSuccess: () => void;
 }
@@ -13,6 +30,7 @@ export default function EditTransactionModal({
   transaction,
   token,
   apiUrl,
+  childId,
   onClose,
   onSuccess,
 }: Props) {
@@ -21,6 +39,34 @@ export default function EditTransactionModal({
   const [type, setType] = useState(transaction.type);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [accountType, setAccountType] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (transaction.account_id) {
+      const fetchAccountType = async () => {
+        try {
+          const resp = await fetch(`${apiUrl}/children/${childId}/accounts`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (resp.ok) {
+            const data: AccountsResponse = await resp.json();
+            let typeName = "Unknown";
+            if (data.checking.id === transaction.account_id) {
+              typeName = "Checking";
+            } else if (data.savings.id === transaction.account_id) {
+              typeName = "Savings";
+            } else if (data.college_savings.id === transaction.account_id) {
+              typeName = "College Savings";
+            }
+            setAccountType(typeName);
+          }
+        } catch (err) {
+          console.error(err);
+        }
+      };
+      fetchAccountType();
+    }
+  }, [transaction.account_id, childId, apiUrl, token]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -68,6 +114,11 @@ export default function EditTransactionModal({
       <div className="modal">
         <h4>Edit Transaction</h4>
         {error && <p className="error">{error}</p>}
+        {accountType && (
+          <p className="help-text" style={{ marginBottom: '1rem' }}>
+            Account: {accountType} (read-only)
+          </p>
+        )}
         <form onSubmit={handleSubmit} className="form">
           <label>
             Amount

@@ -38,7 +38,9 @@ interface Child {
 interface SiteSettings {
   site_name: string
   site_url: string
-  default_interest_rate: number
+  savings_account_interest_rate: number
+  college_savings_account_interest_rate: number
+  savings_account_lockup_period_days: number
   default_penalty_interest_rate: number
   default_cd_penalty_rate: number
   service_fee_amount: number
@@ -114,7 +116,9 @@ export default function AdminPanel({ token, apiUrl, onLogout, siteName, currency
           <h2>Site Settings</h2>
           <p>Name: {settings.site_name}</p>
           <p>Site URL: {settings.site_url}</p>
-          <p>Default Interest Rate: {(settings.default_interest_rate * 100).toFixed(2)}%</p>
+          <p>Savings Account Interest Rate: {(settings.savings_account_interest_rate * 100).toFixed(2)}%</p>
+          <p>College Savings Account Interest Rate: {(settings.college_savings_account_interest_rate * 100).toFixed(2)}%</p>
+          <p>Savings Account Lockup Period: {settings.savings_account_lockup_period_days} days</p>
           <p>Penalty Interest Rate: {(settings.default_penalty_interest_rate * 100).toFixed(2)}%</p>
           <p>CD Penalty Rate: {(settings.default_cd_penalty_rate * 100).toFixed(2)}%</p>
           <p>Currency Symbol: {settings.currency_symbol}</p>
@@ -430,6 +434,7 @@ export default function AdminPanel({ token, apiUrl, onLogout, siteName, currency
           transaction={editingTx}
           token={token}
           apiUrl={apiUrl}
+          childId={editingTx.child_id}
           onClose={() => setEditingTx(null)}
           onSuccess={fetchData}
         />

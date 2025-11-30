@@ -23,10 +23,15 @@ The goal is to teach kids about money through experience — without handing ove
 - Parents can generate one-time share codes to link additional guardians with custom permissions.
 
 ### 💸 Banking & Ledger
-- One main balance per child
-- Ability to accept offers on Certificates of Deposit (CDs) given by parents.
-- Daily **compound interest**, with optional **bonus tiers** or promotions (Parents can change interest rates at any time)
-- Full ledger of transactions: amount, memo, date, creator, type, promo ID (optional)
+- **Multiple account types per child**:
+  - **Checking Account**: Regular account for everyday transactions. No interest earned. Used as the default account for features like CDs, loans, and recurring charges.
+  - **Savings Account**: Earns daily interest at an admin-configurable rate. Has a lockup period (configurable by admin) that restricts withdrawals to funds deposited before the lockup period. Shows both total balance and available balance (amount that can be withdrawn).
+  - **College Savings Account**: Earns daily interest at a separate admin-configurable rate (different from savings account rate). Funds can only be withdrawn by admins for educational expenses. Children can see their balance but cannot request withdrawals.
+- Children can view their total balance across all accounts, as well as individual account balances.
+- Parents and children can filter transactions by account type.
+- Ability to accept offers on Certificates of Deposit (CDs) given by parents (pays into checking account).
+- Daily **compound interest** on savings and college savings accounts, with optional **bonus tiers** or promotions (Parents can change interest rates at any time)
+- Full ledger of transactions: amount, memo, date, creator, type, account type, promo ID (optional)
 - Monetary amounts display a configurable currency symbol (default `$`).
 
 ### 📆 Recurring Charges, Fees & Promotions
@@ -92,14 +97,15 @@ Built with **FastAPI** and **SQLModel**, the backend provides:
 ### 📦 Models
 - `User`: Parent/guardian
 - `Child`: Bank account owner
-- `Transaction`: Deposit, withdrawal, interest, bonus, etc.
+- `Account`: Represents one of three account types (checking, savings, college_savings) for a child. Each child has one of each account type.
+- `Transaction`: Deposit, withdrawal, interest, bonus, etc. Linked to a specific account.
 - `Bucket`: Optional budgeting areas
 - `LedgerEntry`: Internal transaction record
 - `AccessCode`: For child login
-- `AccountSettings`: Interest rates, lock flags, etc.
+- `AccountSettings`: Interest rates, lock flags, etc. (deprecated in favor of per-account settings)
 - `Coupon`: Redeemable reward code
 - `CouponRedemption`: Record of a coupon claim
-- `Settings`: Site-wide configuration such as site name and URL
+- `Settings`: Site-wide configuration including savings account interest rate, college savings account interest rate, and savings account lockup period
 - `ChildUserLink`: Associates guardians and children (many-to-many)
 - `Loan`: Parent-approved loans for children
 - `LoanTransaction`: Payment and interest ledger for loans

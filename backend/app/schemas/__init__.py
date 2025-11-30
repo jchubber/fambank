@@ -16,6 +16,8 @@ from .child import (
     CDPenaltyRateUpdate,
     ChildUpdate,
     AccessCodeUpdate,
+    AccountRead,
+    ChildAccountsResponse,
 )
 from .transaction import (
     TransactionCreate,
@@ -74,6 +76,8 @@ __all__ = [
     "InterestRateUpdate",
     "PenaltyRateUpdate",
     "CDPenaltyRateUpdate",
+    "AccountRead",
+    "ChildAccountsResponse",
     "TransactionCreate",
     "TransactionRead",
     "TransactionUpdate",

@@ -21,9 +21,26 @@ interface LedgerResponse {
   transactions: Transaction[]
 }
 
+interface Account {
+  id: number
+  account_type: string
+  balance: number
+  available_balance: number | null
+  interest_rate: number
+  lockup_period_days: number | null
+}
+
+interface AccountsResponse {
+  checking: Account
+  savings: Account
+  college_savings: Account
+  total_balance: number
+}
+
 interface WithdrawalRequest {
   id: number
   child_id: number
+  account_type: string
   amount: number
   memo?: string | null
   status: string
@@ -49,6 +66,7 @@ interface Props {
   apiUrl: string
   onLogout: () => void
   currencySymbol: string
+  loansUiEnabled?: boolean
 }
 
 interface CdOffer {
@@ -60,23 +78,49 @@ interface CdOffer {
   matures_at?: string | null
 }
 
-export default function ChildDashboard({ token, childId, apiUrl, onLogout, currencySymbol }: Props) {
+export default function ChildDashboard({ token, childId, apiUrl, onLogout, currencySymbol, loansUiEnabled = true }: Props) {
+  const [accounts, setAccounts] = useState<AccountsResponse | null>(null)
   const [ledger, setLedger] = useState<LedgerResponse | null>(null)
   const [withdrawals, setWithdrawals] = useState<WithdrawalRequest[]>([])
   const [cds, setCds] = useState<CdOffer[]>([])
   const [charges, setCharges] = useState<RecurringCharge[]>([])
   const [withdrawAmount, setWithdrawAmount] = useState('')
   const [withdrawMemo, setWithdrawMemo] = useState('')
+  const [withdrawAccountType, setWithdrawAccountType] = useState('checking')
+  const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null)
   const [confirmAction, setConfirmAction] = useState<{ message: string; onConfirm: () => void } | null>(null)
   const [childName, setChildName] = useState('')
   const [tableWidth, setTableWidth] = useState<number>()
   const { showToast } = useToast()
   const [loadingLedger, setLoadingLedger] = useState(false)
 
-  const fetchLedger = useCallback(async () => {
+  const fetchAccounts = useCallback(async () => {
+    try {
+      const resp = await fetch(`${apiUrl}/children/${childId}/accounts`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (resp.ok) {
+        const data = await resp.json()
+        setAccounts(data)
+        // Default to checking account for transaction view
+        if (!selectedAccountId && data.checking) {
+          setSelectedAccountId(data.checking.id)
+        }
+      } else {
+        showToast('Failed to load accounts', 'error')
+      }
+    } catch (error) {
+      showToast('Failed to load accounts', 'error')
+    }
+  }, [apiUrl, childId, token, showToast, selectedAccountId])
+
+  const fetchLedger = useCallback(async (accountId?: number | null) => {
     setLoadingLedger(true)
     try {
-      const resp = await fetch(`${apiUrl}/transactions/child/${childId}`, {
+      const url = accountId 
+        ? `${apiUrl}/transactions/child/${childId}?account_id=${accountId}`
+        : `${apiUrl}/transactions/child/${childId}`;
+      const resp = await fetch(url, {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (resp.ok) setLedger(await resp.json())
@@ -131,41 +175,111 @@ export default function ChildDashboard({ token, childId, apiUrl, onLogout, curre
   }, [apiUrl, token])
 
   useEffect(() => {
-    fetchLedger()
+    fetchAccounts()
     fetchMyWithdrawals()
     fetchChildName()
     fetchCds()
     fetchCharges()
-  }, [fetchLedger, fetchMyWithdrawals, fetchChildName, fetchCds, fetchCharges])
+  }, [fetchAccounts, fetchMyWithdrawals, fetchChildName, fetchCds, fetchCharges])
+
+  useEffect(() => {
+    if (selectedAccountId) {
+      fetchLedger(selectedAccountId)
+    }
+  }, [selectedAccountId, fetchLedger])
 
   return (
     <div className="container" style={{ width: tableWidth ? `${tableWidth}px` : undefined }}>
-      <h2>{childName ? `${childName}'s Account` : 'Your Ledger'}</h2>
+      <h2>{childName ? `${childName}'s Accounts` : 'Your Accounts'}</h2>
       {loadingLedger ? (
         <p>Loading...</p>
       ) : (
-        ledger && (
+        accounts && (
         <>
-          <p>Balance: {formatCurrency(ledger.balance, currencySymbol)}</p>
-          <p className="help-text">
-            This is how much money you have right now. Money you add makes it go up. Money you spend makes it go down.
-          </p>
-          <LedgerTable
-            transactions={ledger.transactions}
-            onWidth={w => !tableWidth && setTableWidth(w)}
-            currencySymbol={currencySymbol}
-          />
+          <div style={{ marginBottom: '2rem' }}>
+            <h3>Total Balance: {formatCurrency(accounts.total_balance, currencySymbol)}</h3>
+          </div>
+          
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '1rem', marginBottom: '2rem' }}>
+            <div style={{ border: '1px solid #ccc', padding: '1rem', borderRadius: '4px' }}>
+              <h4>Checking Account</h4>
+              <p style={{ fontSize: '1.5rem', fontWeight: 'bold' }}>
+                {formatCurrency(accounts.checking.balance, currencySymbol)}
+              </p>
+              <p className="help-text">No interest earned. Use for everyday transactions.</p>
+            </div>
+            
+            <div style={{ border: '1px solid #ccc', padding: '1rem', borderRadius: '4px' }}>
+              <h4>Savings Account</h4>
+              <p style={{ fontSize: '1.5rem', fontWeight: 'bold' }}>
+                {formatCurrency(accounts.savings.balance, currencySymbol)}
+              </p>
+              {accounts.savings.available_balance !== null && (
+                <p style={{ fontSize: '0.9rem', color: '#666' }}>
+                  Available: {formatCurrency(accounts.savings.available_balance, currencySymbol)}
+                </p>
+              )}
+              {accounts.savings.lockup_period_days && (
+                <p className="help-text">
+                  Lockup period: {accounts.savings.lockup_period_days} days. 
+                  Interest rate: {(accounts.savings.interest_rate * 100).toFixed(2)}%
+                </p>
+              )}
+            </div>
+            
+            <div style={{ border: '1px solid #ccc', padding: '1rem', borderRadius: '4px' }}>
+              <h4>College Savings Account</h4>
+              <p style={{ fontSize: '1.5rem', fontWeight: 'bold' }}>
+                {formatCurrency(accounts.college_savings.balance, currencySymbol)}
+              </p>
+              <p className="help-text">
+                Interest rate: {(accounts.college_savings.interest_rate * 100).toFixed(2)}%. 
+                Withdrawals are admin-only for educational expenses.
+              </p>
+            </div>
+          </div>
+          
+          {ledger && accounts && (
+            <>
+              <h3>Transactions</h3>
+              <div style={{ marginBottom: '1rem' }}>
+                <label>
+                  Account:
+                  <select
+                    value={selectedAccountId || ''}
+                    onChange={(e) => {
+                      const accountId = e.target.value ? parseInt(e.target.value) : null;
+                      setSelectedAccountId(accountId);
+                    }}
+                    style={{ marginLeft: '0.5rem' }}
+                  >
+                    <option value={accounts.checking.id}>Checking</option>
+                    <option value={accounts.savings.id}>Savings</option>
+                    <option value={accounts.college_savings.id}>College Savings</option>
+                  </select>
+                </label>
+              </div>
+              <p>Balance: {formatCurrency(ledger.balance, currencySymbol)}</p>
+              <LedgerTable
+                transactions={ledger.transactions}
+                onWidth={w => !tableWidth && setTableWidth(w)}
+                currencySymbol={currencySymbol}
+              />
+            </>
+          )}
         </>
         )
       )}
-      <div>
-        <h4>Borrowing Money (Loans)</h4>
-        <p className="help-text">
-          Need to buy something but don't have enough saved? You can ask your grown-up for a loan.
-          A loan lets you borrow money now and pay it back later, sometimes with a little extra called interest.
-          Visit the <Link to="/child/loans">Loans</Link> page to request one or see what you owe.
-        </p>
-      </div>
+      {loansUiEnabled && (
+        <div>
+          <h4>Borrowing Money (Loans)</h4>
+          <p className="help-text">
+            Need to buy something but don't have enough saved? You can ask your grown-up for a loan.
+            A loan lets you borrow money now and pay it back later, sometimes with a little extra called interest.
+            Visit the <Link to="/child/loans">Loans</Link> page to request one or see what you owe.
+          </p>
+        </div>
+      )}
       {charges.length > 0 && (
         <div>
           <h4>Automatic Money Moves</h4>
@@ -210,7 +324,7 @@ export default function ChildDashboard({ token, childId, apiUrl, onLogout, curre
                               headers: { Authorization: `Bearer ${token}` },
                             })
                             fetchCds()
-                            fetchLedger()
+                            fetchLedger(selectedAccountId)
                           },
                         })
                       }
@@ -264,13 +378,19 @@ export default function ChildDashboard({ token, childId, apiUrl, onLogout, curre
               'Content-Type': 'application/json',
               Authorization: `Bearer ${token}`,
             },
-            body: JSON.stringify({ amount: Number(withdrawAmount), memo: withdrawMemo || null }),
+            body: JSON.stringify({ 
+              amount: Number(withdrawAmount), 
+              memo: withdrawMemo || null,
+              account_type: withdrawAccountType
+            }),
           })
           if (resp.ok) {
             showToast('Withdrawal requested')
             setWithdrawAmount('')
             setWithdrawMemo('')
+            setWithdrawAccountType('checking')
             fetchMyWithdrawals()
+            fetchAccounts()
           } else {
             showToast('Failed to send request', 'error')
           }
@@ -282,8 +402,25 @@ export default function ChildDashboard({ token, childId, apiUrl, onLogout, curre
           A withdrawal is asking your grown-up to send money to you. They have to say yes before you get it.
         </p>
         <label>
+          From which account?
+          <select
+            value={withdrawAccountType}
+            onChange={e => setWithdrawAccountType(e.target.value)}
+            required
+          >
+            <option value="checking">Checking Account</option>
+            <option value="savings">Savings Account</option>
+            <option value="college_savings" disabled>College Savings (Admin Only)</option>
+          </select>
+        </label>
+        {withdrawAccountType === 'savings' && accounts && (
+          <p className="help-text" style={{ color: '#666', fontSize: '0.9rem' }}>
+            Available: {formatCurrency(accounts.savings.available_balance || 0, currencySymbol)}
+          </p>
+        )}
+        <label>
           How much?
-          ${currencySymbol}<input
+          {currencySymbol}<input
             type="number"
             step="0.01"
             value={withdrawAmount}
@@ -308,7 +445,7 @@ export default function ChildDashboard({ token, childId, apiUrl, onLogout, curre
           <ul className="list">
               {withdrawals.map(w => (
                 <li key={w.id}>
-                  {formatCurrency(w.amount, currencySymbol)}{w.memo ? ` (${w.memo})` : ''} - {w.status}
+                  {formatCurrency(w.amount, currencySymbol)} from {w.account_type === 'checking' ? 'Checking' : w.account_type === 'savings' ? 'Savings' : 'College Savings'}{w.memo ? ` (${w.memo})` : ''} - {w.status}
                   {w.status === 'pending' && (
                     <button
                       className="ml-05"

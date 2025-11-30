@@ -31,10 +31,12 @@ class ChildLogin(BaseModel):
 
 class InterestRateUpdate(BaseModel):
     interest_rate: float
+    account_type: str = "checking"  # "checking", "savings", "college_savings"
 
 
 class PenaltyRateUpdate(BaseModel):
     penalty_interest_rate: float
+    account_type: str = "checking"  # "checking", "savings", "college_savings"
 
 
 class CDPenaltyRateUpdate(BaseModel):
@@ -49,3 +51,19 @@ class ChildUpdate(BaseModel):
 
 class AccessCodeUpdate(BaseModel):
     access_code: str
+
+
+class AccountRead(BaseModel):
+    id: int
+    account_type: str
+    balance: float
+    available_balance: float | None = None  # For savings accounts with lockup
+    interest_rate: float
+    lockup_period_days: int | None = None
+
+
+class ChildAccountsResponse(BaseModel):
+    checking: AccountRead
+    savings: AccountRead
+    college_savings: AccountRead
+    total_balance: float

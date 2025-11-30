@@ -149,6 +149,155 @@ async def create_db_and_tables() -> None:
                     "ALTER TABLE account ADD COLUMN overdraft_fee_charged BOOLEAN DEFAULT 0"
                 )
             )
+        if not await has_column("account", "account_type"):
+            await conn.execute(
+                text(
+                    "ALTER TABLE account ADD COLUMN account_type VARCHAR DEFAULT 'checking'"
+                )
+            )
+        if not await has_column("account", "lockup_period_days"):
+            await conn.execute(
+                text(
+                    "ALTER TABLE account ADD COLUMN lockup_period_days INTEGER"
+                )
+            )
+        if not await has_column("transaction", "account_id"):
+            await conn.execute(
+                text(
+                    'ALTER TABLE "transaction" ADD COLUMN account_id INTEGER'
+                )
+            )
+        if not await has_column("withdrawalrequest", "account_type"):
+            await conn.execute(
+                text(
+                    "ALTER TABLE withdrawalrequest ADD COLUMN account_type VARCHAR DEFAULT 'checking'"
+                )
+            )
+        
+        # Settings table migrations for new rate fields (must be done before account creation)
+        if not await has_column("settings", "savings_account_interest_rate"):
+            await conn.execute(
+                text(
+                    "ALTER TABLE settings ADD COLUMN savings_account_interest_rate FLOAT DEFAULT 0.01"
+                )
+            )
+            # Copy existing default_interest_rate to savings_account_interest_rate if it exists
+            if await has_column("settings", "default_interest_rate"):
+                await conn.execute(
+                    text("""
+                        UPDATE settings 
+                        SET savings_account_interest_rate = default_interest_rate 
+                        WHERE savings_account_interest_rate = 0.01
+                    """)
+                )
+        if not await has_column("settings", "college_savings_account_interest_rate"):
+            await conn.execute(
+                text(
+                    "ALTER TABLE settings ADD COLUMN college_savings_account_interest_rate FLOAT DEFAULT 0.01"
+                )
+            )
+            # Copy existing default_interest_rate to college_savings_account_interest_rate if it exists
+            if await has_column("settings", "default_interest_rate"):
+                await conn.execute(
+                    text("""
+                        UPDATE settings 
+                        SET college_savings_account_interest_rate = default_interest_rate 
+                        WHERE college_savings_account_interest_rate = 0.01
+                    """)
+                )
+        if not await has_column("settings", "savings_account_lockup_period_days"):
+            await conn.execute(
+                text(
+                    "ALTER TABLE settings ADD COLUMN savings_account_lockup_period_days INTEGER DEFAULT 30"
+                )
+            )
+        
+        # Migrate existing data: convert single accounts to checking accounts
+        # and create savings/college_savings accounts for existing children
+        if await has_column("account", "account_type"):
+            # Check if we've already run the account creation migration
+            result = await conn.execute(
+                text("SELECT COUNT(*) FROM account WHERE account_type = 'savings'")
+            )
+            savings_count = result.scalar()
+            if savings_count == 0:
+                # Get settings values for interest rates and lockup period
+                settings_result = await conn.execute(
+                    text("SELECT savings_account_interest_rate, college_savings_account_interest_rate, savings_account_lockup_period_days FROM settings WHERE id = 1")
+                )
+                settings_row = settings_result.fetchone()
+                if settings_row:
+                    savings_rate = settings_row[0] if settings_row[0] is not None else 0.01
+                    college_rate = settings_row[1] if settings_row[1] is not None else 0.01
+                    lockup_days = settings_row[2] if settings_row[2] is not None else 30
+                else:
+                    # Fallback if settings don't exist yet
+                    savings_rate = 0.01
+                    college_rate = 0.01
+                    lockup_days = 30
+                
+                # Get all existing children
+                children_result = await conn.execute(text("SELECT id FROM child"))
+                children = children_result.fetchall()
+                
+                for (child_id,) in children:
+                    # Ensure existing account is marked as checking
+                    await conn.execute(
+                        text("UPDATE account SET account_type = 'checking' WHERE child_id = :child_id AND (account_type IS NULL OR account_type = '')"),
+                        {"child_id": child_id}
+                    )
+                    
+                    # Check if child already has all three account types
+                    accounts_result = await conn.execute(
+                        text("SELECT account_type FROM account WHERE child_id = :child_id"),
+                        {"child_id": child_id}
+                    )
+                    existing_types = {row[0] for row in accounts_result.fetchall() if row[0]}
+                    
+                    # Create savings account if missing
+                    if "savings" not in existing_types:
+                        await conn.execute(
+                            text("""
+                                INSERT INTO account (child_id, account_type, interest_rate, lockup_period_days, balance, 
+                                penalty_interest_rate, cd_penalty_rate, last_interest_applied, total_interest_earned,
+                                service_fee_last_charged, overdraft_fee_last_charged, overdraft_fee_charged)
+                                VALUES (:child_id, 'savings', :rate, :lockup, 0.0, 0.02, 0.1, NULL, 0.0, NULL, NULL, 0)
+                            """),
+                            {
+                                "child_id": child_id,
+                                "rate": savings_rate,
+                                "lockup": lockup_days
+                            }
+                        )
+                    
+                    # Create college_savings account if missing
+                    if "college_savings" not in existing_types:
+                        await conn.execute(
+                            text("""
+                                INSERT INTO account (child_id, account_type, interest_rate, lockup_period_days, balance,
+                                penalty_interest_rate, cd_penalty_rate, last_interest_applied, total_interest_earned,
+                                service_fee_last_charged, overdraft_fee_last_charged, overdraft_fee_charged)
+                                VALUES (:child_id, 'college_savings', :rate, NULL, 0.0, 0.02, 0.1, NULL, 0.0, NULL, NULL, 0)
+                            """),
+                            {
+                                "child_id": child_id,
+                                "rate": college_rate
+                            }
+                        )
+                
+                # Backfill account_id in transactions to point to checking accounts
+                await conn.execute(
+                    text("""
+                        UPDATE "transaction" 
+                        SET account_id = (
+                            SELECT id FROM account 
+                            WHERE account.child_id = "transaction".child_id 
+                            AND account.account_type = 'checking'
+                            LIMIT 1
+                        )
+                        WHERE account_id IS NULL
+                    """)
+                )
 
 
 async def get_session() -> AsyncSession:

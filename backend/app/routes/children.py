@@ -13,6 +13,8 @@ from app.schemas import (
     ShareCodeCreate,
     ShareCodeRead,
     ParentAccess,
+    AccountRead,
+    ChildAccountsResponse,
 )
 from app.models import Child, User
 from app.database import get_session
@@ -26,7 +28,8 @@ from app.crud import (
     set_penalty_interest_rate,
     set_cd_penalty_rate,
     get_account_by_child,
-    recalc_interest,
+    get_checking_account_by_child,
+    post_transaction_update,
     save_child,
     get_child_user_link,
     create_share_code,
@@ -35,6 +38,11 @@ from app.crud import (
     link_child_to_user,
     get_parents_for_child,
     remove_child_link,
+    get_accounts_by_child,
+    get_account_by_child_and_type,
+    calculate_balance,
+    calculate_total_balance,
+    calculate_available_balance,
 )
 from app.auth import (
     get_current_user,
@@ -288,6 +296,75 @@ async def list_children(
     return result
 
 
+@router.get("/{child_id}/accounts", response_model=ChildAccountsResponse)
+async def get_child_accounts(
+    child_id: int,
+    db: AsyncSession = Depends(get_session),
+    identity: tuple[str, Child | User] = Depends(get_current_identity),
+):
+    """Return all accounts for a child with balances."""
+    kind, obj = identity
+    if kind == "child":
+        child = obj
+        if child.id != child_id:
+            raise HTTPException(status_code=403, detail="Not authorized")
+    else:
+        user: User = obj
+        if user.role != "admin":
+            user_perms = {p.name for p in user.permissions}
+            if PERM_VIEW_TRANSACTIONS not in user_perms:
+                raise HTTPException(status_code=403, detail="Insufficient permissions")
+            link = await get_child_user_link(db, user.id, child_id)
+            if not link:
+                raise HTTPException(status_code=404, detail="Child not found")
+            if (
+                PERM_VIEW_TRANSACTIONS not in link.permissions
+                and not link.is_owner
+            ):
+                raise HTTPException(status_code=403, detail="Insufficient permissions")
+    
+    checking = await get_account_by_child_and_type(db, child_id, "checking")
+    savings = await get_account_by_child_and_type(db, child_id, "savings")
+    college_savings = await get_account_by_child_and_type(db, child_id, "college_savings")
+    
+    if not checking or not savings or not college_savings:
+        raise HTTPException(status_code=404, detail="Accounts not found")
+    
+    checking_balance = await calculate_balance(db, checking.id)
+    savings_balance = await calculate_balance(db, savings.id)
+    savings_available = await calculate_available_balance(db, savings.id)
+    college_balance = await calculate_balance(db, college_savings.id)
+    total = await calculate_total_balance(db, child_id)
+    
+    return ChildAccountsResponse(
+        checking=AccountRead(
+            id=checking.id,
+            account_type=checking.account_type,
+            balance=checking_balance,
+            available_balance=None,
+            interest_rate=checking.interest_rate,
+            lockup_period_days=None,
+        ),
+        savings=AccountRead(
+            id=savings.id,
+            account_type=savings.account_type,
+            balance=savings_balance,
+            available_balance=savings_available,
+            interest_rate=savings.interest_rate,
+            lockup_period_days=savings.lockup_period_days,
+        ),
+        college_savings=AccountRead(
+            id=college_savings.id,
+            account_type=college_savings.account_type,
+            balance=college_balance,
+            available_balance=None,
+            interest_rate=college_savings.interest_rate,
+            lockup_period_days=None,
+        ),
+        total_balance=total,
+    )
+
+
 @router.get("/{child_id}", response_model=ChildRead)
 async def get_child_route(
     child_id: int,
@@ -385,19 +462,21 @@ async def update_interest_rate(
         raise HTTPException(status_code=404, detail="Child not found")
     if current_user.role != "admin":
         await _ensure_link(db, current_user.id, child_id, PERM_MANAGE_CHILD_SETTINGS)
-    await recalc_interest(db, child_id)
+    await post_transaction_update(db, child_id)
     try:
-        account = await set_interest_rate(db, child_id, data.interest_rate)
+        account = await set_interest_rate(db, child_id, data.interest_rate, data.account_type)
     except ValueError:
         raise HTTPException(status_code=404, detail="Account not found")
+    # Return checking account for backward compatibility
+    checking_account = await get_checking_account_by_child(db, child_id)
     return ChildRead(
         id=child.id,
         first_name=child.first_name,
         account_frozen=child.account_frozen,
-        interest_rate=account.interest_rate if account else None,
-        penalty_interest_rate=account.penalty_interest_rate if account else None,
-        cd_penalty_rate=account.cd_penalty_rate if account else None,
-        total_interest_earned=account.total_interest_earned if account else None,
+        interest_rate=checking_account.interest_rate if checking_account else None,
+        penalty_interest_rate=checking_account.penalty_interest_rate if checking_account else None,
+        cd_penalty_rate=checking_account.cd_penalty_rate if checking_account else None,
+        total_interest_earned=checking_account.total_interest_earned if checking_account else None,
     )
 
 
@@ -413,21 +492,23 @@ async def update_penalty_interest_rate(
         raise HTTPException(status_code=404, detail="Child not found")
     if current_user.role != "admin":
         await _ensure_link(db, current_user.id, child_id, PERM_MANAGE_CHILD_SETTINGS)
-    await recalc_interest(db, child_id)
+    await post_transaction_update(db, child_id)
     try:
         account = await set_penalty_interest_rate(
-            db, child_id, data.penalty_interest_rate
+            db, child_id, data.penalty_interest_rate, data.account_type
         )
     except ValueError:
         raise HTTPException(status_code=404, detail="Account not found")
+    # Return checking account for backward compatibility
+    checking_account = await get_checking_account_by_child(db, child_id)
     return ChildRead(
         id=child.id,
         first_name=child.first_name,
         account_frozen=child.account_frozen,
-        interest_rate=account.interest_rate if account else None,
-        penalty_interest_rate=account.penalty_interest_rate if account else None,
-        cd_penalty_rate=account.cd_penalty_rate if account else None,
-        total_interest_earned=account.total_interest_earned if account else None,
+        interest_rate=checking_account.interest_rate if checking_account else None,
+        penalty_interest_rate=checking_account.penalty_interest_rate if checking_account else None,
+        cd_penalty_rate=checking_account.cd_penalty_rate if checking_account else None,
+        total_interest_earned=checking_account.total_interest_earned if checking_account else None,
     )
 
 

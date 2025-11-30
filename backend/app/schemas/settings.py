@@ -8,7 +8,9 @@ from pydantic import BaseModel
 class SettingsRead(BaseModel):
     site_name: str
     site_url: str
-    default_interest_rate: float
+    savings_account_interest_rate: float
+    college_savings_account_interest_rate: float
+    savings_account_lockup_period_days: int
     default_penalty_interest_rate: float
     default_cd_penalty_rate: float
     service_fee_amount: float
@@ -27,7 +29,9 @@ class SettingsRead(BaseModel):
 class SettingsUpdate(BaseModel):
     site_name: str | None = None
     site_url: str | None = None
-    default_interest_rate: float | None = None
+    savings_account_interest_rate: float | None = None
+    college_savings_account_interest_rate: float | None = None
+    savings_account_lockup_period_days: int | None = None
     default_penalty_interest_rate: float | None = None
     default_cd_penalty_rate: float | None = None
     service_fee_amount: float | None = None

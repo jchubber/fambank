@@ -16,12 +16,16 @@ from app.schemas import (
 from app.crud import (
     create_transaction,
     get_transactions_by_child,
+    get_transactions_by_account,
     calculate_balance,
+    calculate_total_balance,
     get_transaction,
     save_transaction,
     delete_transaction,
     post_transaction_update,
     get_child_user_link,
+    get_checking_account_by_child,
+    get_account,
 )
 from app.auth import require_permissions, get_current_user, get_current_identity
 from app.acl import (
@@ -64,8 +68,17 @@ async def add_transaction(
         if perm_needed not in link.permissions and not link.is_owner:
             raise HTTPException(status_code=403, detail="Insufficient permissions")
 
+    # Default to checking account if account_id not provided
+    account_id = transaction.account_id
+    if not account_id:
+        checking_account = await get_checking_account_by_child(db, transaction.child_id)
+        if not checking_account:
+            raise HTTPException(status_code=404, detail="Checking account not found")
+        account_id = checking_account.id
+
     tx_model = Transaction(
         child_id=transaction.child_id,
+        account_id=account_id,
         type=transaction.type,
         amount=transaction.amount,
         memo=transaction.memo,
@@ -119,10 +132,11 @@ async def delete_transaction_route(
 @router.get("/child/{child_id}", response_model=LedgerResponse)
 async def get_ledger(
     child_id: int,
+    account_id: int | None = None,
     db: AsyncSession = Depends(get_session),
     identity: tuple[str, Child | User] = Depends(get_current_identity),
 ):
-    """Return the full ledger and balance for a child."""
+    """Return the full ledger and balance for a child, optionally filtered by account."""
     kind, obj = identity
     if kind == "child":
         child = obj
@@ -142,6 +156,21 @@ async def get_ledger(
                 and not link.is_owner
             ):
                 raise HTTPException(status_code=403, detail="Insufficient permissions")
-    transactions = await get_transactions_by_child(db, child_id)
-    balance = await calculate_balance(db, child_id)
+    
+    from app.crud import get_transactions_by_child, get_transactions_by_account, calculate_balance, calculate_total_balance, get_checking_account_by_child
+    
+    if account_id:
+        # Filter by specific account
+        from app.crud import get_account
+        account = await get_account(db, account_id)
+        if not account or account.child_id != child_id:
+            raise HTTPException(status_code=404, detail="Account not found")
+        transactions = await get_transactions_by_account(db, account_id)
+        balance = await calculate_balance(db, account_id)
+    else:
+        # Return all transactions for child
+        transactions = await get_transactions_by_child(db, child_id)
+        # For backward compatibility, return total balance
+        balance = await calculate_total_balance(db, child_id)
+    
     return {"balance": balance, "transactions": transactions}

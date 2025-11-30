@@ -9,6 +9,7 @@ application flow easier for new developers to follow.
 import os
 import logging
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.openapi.docs import get_swagger_ui_html
@@ -112,9 +113,10 @@ async def daily_interest_task():
                 await process_due_recurring_charges(session)
                 settings = await get_settings(session)
                 accounts = await get_all_accounts(session)
-                # Recalculate interest for every account.
+                # Recalculate interest for savings and college_savings accounts only.
                 for account in accounts:
-                    await recalc_interest(session, account.child_id)
+                    if account.account_type in ("savings", "college_savings"):
+                        await recalc_interest(session, account.id)
                 accounts = await get_all_accounts(session)
                 today = date.today()
                 # Apply monthly service fees and overdraft penalties.
@@ -168,6 +170,18 @@ async def read_root():
         s = await get_settings(session)
         name = s.site_name
     return {"message": f"Welcome to {name} API"}
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Handle validation errors with detailed logging."""
+    body = await request.body()
+    logger.error(f"Validation error on {request.url.path}: {exc.errors()}")
+    logger.error(f"Request body: {body}")
+    return JSONResponse(
+        status_code=400,
+        content={"detail": exc.errors(), "body": body.decode('utf-8') if body else None},
+    )
 
 
 @app.exception_handler(Exception)

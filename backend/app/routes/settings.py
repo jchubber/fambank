@@ -19,7 +19,9 @@ async def read_settings(db: AsyncSession = Depends(get_session)):
     return SettingsRead(
         site_name=settings.site_name,
         site_url=settings.site_url,
-        default_interest_rate=settings.default_interest_rate,
+        savings_account_interest_rate=settings.savings_account_interest_rate,
+        college_savings_account_interest_rate=settings.college_savings_account_interest_rate,
+        savings_account_lockup_period_days=settings.savings_account_lockup_period_days,
         default_penalty_interest_rate=settings.default_penalty_interest_rate,
         default_cd_penalty_rate=settings.default_cd_penalty_rate,
         service_fee_amount=settings.service_fee_amount,

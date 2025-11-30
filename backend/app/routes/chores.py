@@ -138,8 +138,13 @@ async def approve_chore(
         if chore.child_id not in [c.id for c in children]:
             raise HTTPException(status_code=404, detail="Child not found")
     if chore.status == "awaiting_approval":
+        from app.crud import get_checking_account_by_child
+        checking_account = await get_checking_account_by_child(db, chore.child_id)
+        if not checking_account:
+            raise HTTPException(status_code=404, detail="Checking account not found")
         tx = Transaction(
             child_id=chore.child_id,
+            account_id=checking_account.id,
             type="credit",
             amount=chore.amount,
             memo=f"Chore: {chore.description}",

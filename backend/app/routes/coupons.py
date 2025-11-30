@@ -124,8 +124,13 @@ async def redeem_coupon_route(
         link = await get_child_user_link(db, coupon.created_by, child.id)
         if not link:
             raise HTTPException(status_code=403, detail="Not authorized")
+    from app.crud import get_checking_account_by_child
+    checking_account = await get_checking_account_by_child(db, child.id)
+    if not checking_account:
+        raise HTTPException(status_code=404, detail="Checking account not found")
     tx = Transaction(
         child_id=child.id,
+        account_id=checking_account.id,
         type="credit",
         amount=coupon.amount,
         memo=coupon.memo,

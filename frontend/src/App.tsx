@@ -160,7 +160,7 @@ function App() {
             <>
               <Route
                 path="/child"
-                element={<ChildDashboard token={token} childId={childId} apiUrl={apiUrl} onLogout={handleLogout} currencySymbol={currencySymbol} />}
+                element={<ChildDashboard token={token} childId={childId} apiUrl={apiUrl} onLogout={handleLogout} currencySymbol={currencySymbol} loansUiEnabled={loansUiEnabled} />}
               />
               <Route
                 path="/child/loans"

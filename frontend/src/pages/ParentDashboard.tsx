@@ -48,6 +48,22 @@ interface LedgerResponse {
   transactions: Transaction[];
 }
 
+interface Account {
+  id: number;
+  account_type: string;
+  balance: number;
+  available_balance: number | null;
+  interest_rate: number;
+  lockup_period_days: number | null;
+}
+
+interface AccountsResponse {
+  checking: Account;
+  savings: Account;
+  college_savings: Account;
+  total_balance: number;
+}
+
 interface WithdrawalRequest {
   id: number;
   child_id: number;
@@ -87,6 +103,9 @@ export default function ParentDashboard({
 }: Props) {
   const [children, setChildren] = useState<Child[]>([]);
   const [ledger, setLedger] = useState<LedgerResponse | null>(null);
+  const [accounts, setAccounts] = useState<AccountsResponse | null>(null);
+  const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
+  const [txAccountId, setTxAccountId] = useState<number | null>(null);
   const [selectedChild, setSelectedChild] = useState<number | null>(null);
   const [pendingWithdrawals, setPendingWithdrawals] = useState<
     WithdrawalRequest[]
@@ -156,12 +175,20 @@ export default function ParentDashboard({
             let balance: number | undefined;
             let last_activity: string | undefined;
             try {
+              // Use accounts endpoint to get total balance
+              const accountsResp = await fetch(`${apiUrl}/children/${c.id}/accounts`, {
+                headers: { Authorization: `Bearer ${token}` },
+              });
+              if (accountsResp.ok) {
+                const accountsData = await accountsResp.json();
+                balance = accountsData.total_balance;
+              }
+              // Get last activity from transactions
               const l = await fetch(`${apiUrl}/transactions/child/${c.id}`, {
                 headers: { Authorization: `Bearer ${token}` },
               });
               if (l.ok) {
                 const lr: LedgerResponse = await l.json();
-                balance = lr.balance;
                 last_activity = lr.transactions[0]?.timestamp;
               }
             } catch {
@@ -191,15 +218,69 @@ export default function ParentDashboard({
     }
   }, [apiUrl, token, showToast]);
 
-  const fetchLedger = useCallback(
+  const fetchAccounts = useCallback(
     async (cid: number) => {
-      const resp = await fetch(`${apiUrl}/transactions/child/${cid}`, {
+      try {
+        const resp = await fetch(`${apiUrl}/children/${cid}/accounts`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (resp.ok) {
+          const data: AccountsResponse = await resp.json();
+          setAccounts(data);
+          // Initialize transaction account to checking account
+          setTxAccountId(data.checking.id);
+          // Default to checking account for transaction view
+          if (!selectedAccountId && data.checking) {
+            setSelectedAccountId(data.checking.id);
+          }
+        } else {
+          showToast("Failed to load accounts", "error");
+        }
+      } catch {
+        showToast("Failed to load accounts", "error");
+      }
+    },
+    [apiUrl, token, showToast, selectedAccountId]
+  );
+
+  const fetchLedger = useCallback(
+    async (cid: number, accountId?: number | null) => {
+      // Require accountId - default to checking if not provided
+      if (!accountId) {
+        if (accounts) {
+          accountId = accounts.checking.id;
+        } else {
+          // Try to get accounts first
+          try {
+            const resp = await fetch(`${apiUrl}/children/${cid}/accounts`, {
+              headers: { Authorization: `Bearer ${token}` },
+            });
+            if (resp.ok) {
+              const data: AccountsResponse = await resp.json();
+              accountId = data.checking.id;
+            } else {
+              return; // Can't fetch without account
+            }
+          } catch {
+            return; // Can't fetch without account
+          }
+        }
+      }
+      const url = `${apiUrl}/transactions/child/${cid}?account_id=${accountId}`;
+      const resp = await fetch(url, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (resp.ok) setLedger(await resp.json());
     },
-    [apiUrl, token],
+    [apiUrl, token, accounts],
   );
+
+  // Fetch ledger when selectedAccountId or accounts change
+  useEffect(() => {
+    if (selectedChild !== null && selectedAccountId && accounts) {
+      fetchLedger(selectedChild, selectedAccountId);
+    }
+  }, [selectedChild, selectedAccountId, accounts, fetchLedger]);
 
   const fetchCharges = useCallback(
     async (cid: number) => {
@@ -322,12 +403,13 @@ export default function ParentDashboard({
                   <button
                     onClick={() => {
                       closeLedger();
-                      fetchLedger(c.id);
+                      fetchAccounts(c.id);
                       fetchCharges(c.id);
                       setSelectedChild(c.id);
+                      setSelectedAccountId(null); // Will be set to checking by fetchAccounts
                     }}
                   >
-                    View Ledger
+                    View Accounts
                   </button>
                   <button
                     onClick={() => {
@@ -435,13 +517,14 @@ export default function ParentDashboard({
                 <button
                   onClick={() => {
                     closeLedger();
-                    fetchLedger(actionChild.id);
+                    fetchAccounts(actionChild.id);
                     fetchCharges(actionChild.id);
                     setSelectedChild(actionChild.id);
+                    setSelectedAccountId(null); // Will be set to checking by fetchAccounts
                     setActionChild(null);
                   }}
                 >
-                  📊 View Ledger
+                  📊 View Accounts
                 </button>
               )}
             </div>
@@ -453,13 +536,80 @@ export default function ParentDashboard({
           </div>
         </div>
       )}
-      {ledger && selectedChild !== null && (
+      {accounts && selectedChild !== null && (
         <div className="ledger-area">
           <div className="ledger-header">
-            <h4>Ledger for child #{selectedChild}</h4>
-            <button onClick={closeLedger}>Close Ledger</button>
+            <h4>Accounts for child #{selectedChild}</h4>
+            <button onClick={closeLedger}>Close Accounts</button>
           </div>
-          <p>Balance: {formatCurrency(ledger.balance, currencySymbol)}</p>
+          <div style={{ marginBottom: '1rem' }}>
+            <h3 style={{ fontSize: '1.5rem', fontWeight: 'bold' }}>
+              Total Balance: {formatCurrency(accounts.total_balance, currencySymbol)}
+            </h3>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '1rem', marginBottom: '2rem' }}>
+            <div style={{ border: '1px solid #ccc', padding: '1rem', borderRadius: '4px' }}>
+              <h4>Checking Account</h4>
+              <p style={{ fontSize: '1.5rem', fontWeight: 'bold' }}>
+                {formatCurrency(accounts.checking.balance, currencySymbol)}
+              </p>
+              <p className="help-text">No interest. Used for regular transactions.</p>
+            </div>
+            
+            <div style={{ border: '1px solid #ccc', padding: '1rem', borderRadius: '4px' }}>
+              <h4>Savings Account</h4>
+              <p style={{ fontSize: '1.5rem', fontWeight: 'bold' }}>
+                {formatCurrency(accounts.savings.balance, currencySymbol)}
+              </p>
+              {accounts.savings.available_balance !== null && (
+                <p style={{ fontSize: '0.9rem', color: '#666' }}>
+                  Available: {formatCurrency(accounts.savings.available_balance, currencySymbol)}
+                </p>
+              )}
+              {accounts.savings.lockup_period_days && (
+                <p className="help-text">
+                  Lockup period: {accounts.savings.lockup_period_days} days. 
+                  Interest rate: {(accounts.savings.interest_rate * 100).toFixed(2)}%
+                </p>
+              )}
+            </div>
+            
+            <div style={{ border: '1px solid #ccc', padding: '1rem', borderRadius: '4px' }}>
+              <h4>College Savings Account</h4>
+              <p style={{ fontSize: '1.5rem', fontWeight: 'bold' }}>
+                {formatCurrency(accounts.college_savings.balance, currencySymbol)}
+              </p>
+              <p className="help-text">
+                Interest rate: {(accounts.college_savings.interest_rate * 100).toFixed(2)}%. 
+                Withdrawals are admin-only for educational expenses.
+              </p>
+            </div>
+          </div>
+          
+          {ledger && accounts && (
+            <>
+              <h3>Transactions</h3>
+              <div style={{ marginBottom: '1rem' }}>
+                <label>
+                  Account:
+                  <select
+                    value={selectedAccountId || accounts.checking.id}
+                    onChange={(e) => {
+                      const accountId = e.target.value ? parseInt(e.target.value) : null;
+                      setSelectedAccountId(accountId);
+                      if (selectedChild !== null && accountId) {
+                        fetchLedger(selectedChild, accountId);
+                      }
+                    }}
+                    style={{ marginLeft: '0.5rem' }}
+                  >
+                    <option value={accounts.checking.id}>Checking</option>
+                    <option value={accounts.savings.id}>Savings</option>
+                    <option value={accounts.college_savings.id}>College Savings</option>
+                  </select>
+                </label>
+              </div>
+              <p>Balance: {formatCurrency(ledger.balance, currencySymbol)}</p>
           <div className="ledger-scroll">
             <LedgerTable
               transactions={ledger.transactions}
@@ -490,7 +640,8 @@ export default function ParentDashboard({
                             },
                           );
                           if (resp.ok && selectedChild !== null) {
-                            await fetchLedger(selectedChild);
+                            await fetchAccounts(selectedChild);
+                            await fetchLedger(selectedChild, selectedAccountId);
                           }
                         },
                       })
@@ -504,6 +655,8 @@ export default function ParentDashboard({
               )}
             />
           </div>
+            </>
+          )}
           <h4>Recurring Transactions</h4>
           <ul className="list">
             {charges.map((c) => (
@@ -636,6 +789,7 @@ export default function ParentDashboard({
                 },
                 body: JSON.stringify({
                   child_id: selectedChild,
+                  account_id: txAccountId || (accounts ? accounts.checking.id : null),
                   type: txType,
                   amount: Number(txAmount),
                   memo: txMemo || null,
@@ -646,8 +800,10 @@ export default function ParentDashboard({
               setTxAmount("");
               setTxMemo("");
               setTxType("credit");
+              setTxAccountId(null);
               if (resp.ok && selectedChild !== null) {
-                await fetchLedger(selectedChild);
+                await fetchAccounts(selectedChild);
+                await fetchLedger(selectedChild, selectedAccountId || (accounts ? accounts.checking.id : null));
               } else if (!resp.ok) {
                 const data = await resp.json().catch(() => null);
                 showToast(data?.detail || "Action failed", "error");
@@ -656,6 +812,24 @@ export default function ParentDashboard({
             className="form"
           >
             <h4>Add Transaction</h4>
+            <label>
+              Account
+              <select
+                value={txAccountId || (accounts ? accounts.checking.id : '')}
+                onChange={(e) => {
+                  const accountId = e.target.value ? parseInt(e.target.value) : null;
+                  setTxAccountId(accountId);
+                }}
+              >
+                {accounts && (
+                  <>
+                    <option value={accounts.checking.id}>Checking</option>
+                    <option value={accounts.savings.id}>Savings</option>
+                    <option value={accounts.college_savings.id}>College Savings</option>
+                  </>
+                )}
+              </select>
+            </label>
             <label>
               Type
               <select
@@ -954,9 +1128,13 @@ export default function ParentDashboard({
           transaction={editingTx}
           token={token}
           apiUrl={apiUrl}
+          childId={selectedChild || 0}
           onClose={() => setEditingTx(null)}
           onSuccess={async () => {
-            await fetchLedger(selectedChild);
+            if (selectedChild !== null) {
+              await fetchAccounts(selectedChild);
+              await fetchLedger(selectedChild, selectedAccountId);
+            }
           }}
         />
       )}

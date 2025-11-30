@@ -4,6 +4,7 @@ import { formatCurrency } from '../utils/currency'
 export interface Transaction {
   id: number
   child_id: number
+  account_id?: number
   type: string
   amount: number
   memo?: string | null

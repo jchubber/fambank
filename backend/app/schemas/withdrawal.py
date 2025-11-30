@@ -9,11 +9,13 @@ from pydantic import BaseModel
 class WithdrawalRequestCreate(BaseModel):
     amount: float
     memo: Optional[str] = None
+    account_type: str = "checking"  # "checking", "savings", "college_savings"
 
 
 class WithdrawalRequestRead(BaseModel):
     id: int
     child_id: int
+    account_type: str
     amount: float
     memo: Optional[str] = None
     status: str

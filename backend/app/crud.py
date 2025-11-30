@@ -194,19 +194,41 @@ async def create_child(db: AsyncSession, child: Child):
 
 
 async def create_child_for_user(db: AsyncSession, child: Child, user_id: int):
-    """Create a child, associated account, and link in a single transaction."""
+    """Create a child, associated accounts (checking, savings, college_savings), and link in a single transaction."""
     settings = await get_settings(db)
     db.add(child)
     await db.flush()  # ensure child.id is populated
 
-    # Create an associated account with default interest settings
-    account = Account(
+    # Create checking account (no interest, default rates for fees)
+    checking_account = Account(
         child_id=child.id,
-        interest_rate=settings.default_interest_rate,
+        account_type="checking",
+        interest_rate=0.0,  # Checking accounts don't earn interest
         penalty_interest_rate=settings.default_penalty_interest_rate,
         cd_penalty_rate=settings.default_cd_penalty_rate,
     )
-    db.add(account)
+    db.add(checking_account)
+
+    # Create savings account (with interest and lockup period)
+    savings_account = Account(
+        child_id=child.id,
+        account_type="savings",
+        interest_rate=settings.savings_account_interest_rate,
+        penalty_interest_rate=settings.default_penalty_interest_rate,
+        cd_penalty_rate=settings.default_cd_penalty_rate,
+        lockup_period_days=settings.savings_account_lockup_period_days,
+    )
+    db.add(savings_account)
+
+    # Create college savings account (with separate interest rate)
+    college_savings_account = Account(
+        child_id=child.id,
+        account_type="college_savings",
+        interest_rate=settings.college_savings_account_interest_rate,
+        penalty_interest_rate=settings.default_penalty_interest_rate,
+        cd_penalty_rate=settings.default_cd_penalty_rate,
+    )
+    db.add(college_savings_account)
 
     link = ChildUserLink(
         user_id=user_id,
@@ -370,14 +392,46 @@ async def mark_share_code_used(
     return share
 
 
-async def get_account_by_child(
+async def get_accounts_by_child(
     db: AsyncSession, child_id: int
-) -> Account | None:
-    """Return the account associated with a child if it exists."""
+) -> list[Account]:
+    """Return all accounts associated with a child."""
     result = await db.execute(
         select(Account).where(Account.child_id == child_id)
     )
+    return result.scalars().all()
+
+
+async def get_account_by_child_and_type(
+    db: AsyncSession, child_id: int, account_type: str
+) -> Account | None:
+    """Return a specific account type for a child."""
+    result = await db.execute(
+        select(Account).where(
+            Account.child_id == child_id,
+            Account.account_type == account_type
+        )
+    )
     return result.scalar_one_or_none()
+
+
+async def get_checking_account_by_child(
+    db: AsyncSession, child_id: int
+) -> Account | None:
+    """Return the checking account for a child (for backward compatibility)."""
+    return await get_account_by_child_and_type(db, child_id, "checking")
+
+
+async def get_account(db: AsyncSession, account_id: int) -> Account | None:
+    """Get an account by its ID."""
+    return await db.get(Account, account_id)
+
+
+async def get_account_by_child(
+    db: AsyncSession, child_id: int
+) -> Account | None:
+    """Return the checking account associated with a child (backward compatibility)."""
+    return await get_checking_account_by_child(db, child_id)
 
 
 async def get_all_accounts(db: AsyncSession) -> list[Account]:
@@ -388,10 +442,10 @@ async def get_all_accounts(db: AsyncSession) -> list[Account]:
 
 
 async def set_interest_rate(
-    db: AsyncSession, child_id: int, rate: float
+    db: AsyncSession, child_id: int, rate: float, account_type: str = "checking"
 ) -> Account:
-    """Update the standard interest rate for an account."""
-    account = await get_account_by_child(db, child_id)
+    """Update the interest rate for a specific account type."""
+    account = await get_account_by_child_and_type(db, child_id, account_type)
     if not account:
         raise ValueError("Account not found")
     account.interest_rate = rate
@@ -402,10 +456,10 @@ async def set_interest_rate(
 
 
 async def set_penalty_interest_rate(
-    db: AsyncSession, child_id: int, rate: float
+    db: AsyncSession, child_id: int, rate: float, account_type: str = "checking"
 ) -> Account:
-    """Update the penalty interest rate used for negative balances."""
-    account = await get_account_by_child(db, child_id)
+    """Update the penalty interest rate for a specific account type."""
+    account = await get_account_by_child_and_type(db, child_id, account_type)
     if not account:
         raise ValueError("Account not found")
     account.penalty_interest_rate = rate
@@ -476,6 +530,19 @@ async def get_transactions_by_child(
     return result.scalars().all()
 
 
+async def get_transactions_by_account(
+    db: AsyncSession, account_id: int
+) -> list[Transaction]:
+    """Return all transactions for a specific account ordered by time."""
+
+    result = await db.execute(
+        select(Transaction)
+        .where(Transaction.account_id == account_id)
+        .order_by(Transaction.timestamp)
+    )
+    return result.scalars().all()
+
+
 async def get_all_transactions(db: AsyncSession) -> list[Transaction]:
     """Return the full ledger across all children."""
 
@@ -485,8 +552,8 @@ async def get_all_transactions(db: AsyncSession) -> list[Transaction]:
     return result.scalars().all()
 
 
-async def calculate_balance(db: AsyncSession, child_id: int) -> float:
-    """Calculate the running balance for a child's account."""
+async def calculate_balance(db: AsyncSession, account_id: int) -> float:
+    """Calculate the running balance for a specific account."""
 
     total = func.coalesce(
         func.sum(
@@ -498,21 +565,70 @@ async def calculate_balance(db: AsyncSession, child_id: int) -> float:
         0.0,
     )
     result = await db.execute(
-        select(total).where(Transaction.child_id == child_id)
+        select(total).where(Transaction.account_id == account_id)
     )
     return float(result.scalar_one())
 
 
-async def recalc_interest(db: AsyncSession, child_id: int) -> None:
-    """Recalculate and post daily interest transactions."""
-    account = await get_account_by_child(db, child_id)
+async def calculate_total_balance(db: AsyncSession, child_id: int) -> float:
+    """Calculate the total balance across all accounts for a child."""
+    accounts = await get_accounts_by_child(db, child_id)
+    total = 0.0
+    for account in accounts:
+        total += await calculate_balance(db, account.id)
+    return total
+
+
+async def calculate_available_balance(db: AsyncSession, account_id: int) -> float:
+    """Calculate available balance for a savings account (respects lockup period)."""
+    account = await db.get(Account, account_id)
+    if not account:
+        return 0.0
+    
+    if account.account_type != "savings" or account.lockup_period_days is None:
+        # For non-savings accounts or savings without lockup, return current balance
+        return await calculate_balance(db, account_id)
+    
+    # For savings accounts with lockup period
+    current_balance = await calculate_balance(db, account_id)
+    lockup_date = date.today() - timedelta(days=account.lockup_period_days)
+    
+    # Calculate balance at lockup_date
+    total_before = func.coalesce(
+        func.sum(
+            case(
+                (Transaction.type == "credit", Transaction.amount),
+                else_=-Transaction.amount,
+            )
+        ),
+        0.0,
+    )
+    result = await db.execute(
+        select(total_before).where(
+            Transaction.account_id == account_id,
+            Transaction.timestamp < datetime.combine(lockup_date, time.min)
+        )
+    )
+    balance_at_lockup = float(result.scalar_one())
+    
+    # Available balance is the minimum of current balance and balance at lockup date
+    return min(current_balance, balance_at_lockup)
+
+
+async def recalc_interest(db: AsyncSession, account_id: int) -> None:
+    """Recalculate and post daily interest transactions for a specific account."""
+    account = await db.get(Account, account_id)
     if not account:
         raise ValueError("Account not found")
+    
+    # Only calculate interest for savings and college_savings accounts
+    if account.account_type == "checking":
+        return
 
     # Determine starting point for recalculation
     first_tx_result = await db.execute(
         select(func.min(Transaction.timestamp)).where(
-            Transaction.child_id == child_id
+            Transaction.account_id == account_id
         )
     )
     first_tx_time = first_tx_result.scalar_one_or_none()
@@ -538,7 +654,7 @@ async def recalc_interest(db: AsyncSession, child_id: int) -> None:
                 0.0,
             )
         ).where(
-            Transaction.child_id == child_id,
+            Transaction.account_id == account_id,
             Transaction.timestamp < datetime.combine(start_date, time.min),
         )
     )
@@ -547,7 +663,7 @@ async def recalc_interest(db: AsyncSession, child_id: int) -> None:
     result = await db.execute(
         select(Transaction)
         .where(
-            Transaction.child_id == child_id,
+            Transaction.account_id == account_id,
             Transaction.timestamp >= datetime.combine(start_date, time.min),
         )
         .order_by(Transaction.timestamp)
@@ -576,7 +692,8 @@ async def recalc_interest(db: AsyncSession, child_id: int) -> None:
         if interest != 0:
             tx_time = datetime.combine(day + timedelta(days=1), time.min)
             interest_tx = Transaction(
-                child_id=child_id,
+                child_id=account.child_id,
+                account_id=account_id,
                 type="credit" if interest >= 0 else "debit",
                 amount=abs(interest),
                 memo="Interest",
@@ -604,7 +721,7 @@ async def apply_service_fee(
         return
     if account.service_fee_last_charged and account.service_fee_last_charged.month == today.month and account.service_fee_last_charged.year == today.year:
         return
-    balance = await calculate_balance(db, account.child_id)
+    balance = await calculate_balance(db, account.id)
     fee = (
         abs(balance) * settings.service_fee_amount
         if settings.service_fee_is_percentage
@@ -615,6 +732,7 @@ async def apply_service_fee(
         return
     tx = Transaction(
         child_id=account.child_id,
+        account_id=account.id,
         type="debit",
         amount=fee,
         memo="Service Fee",
@@ -632,7 +750,7 @@ async def apply_overdraft_fee(
     db: AsyncSession, account: Account, settings: Settings, today: date
 ) -> None:
     """Charge an overdraft fee when an account balance is negative."""
-    balance = await calculate_balance(db, account.child_id)
+    balance = await calculate_balance(db, account.id)
     if balance < 0:
         fee = (
             abs(balance) * settings.overdraft_fee_amount
@@ -645,6 +763,7 @@ async def apply_overdraft_fee(
                 if account.overdraft_fee_last_charged != today:
                     tx = Transaction(
                         child_id=account.child_id,
+                        account_id=account.id,
                         type="debit",
                         amount=fee,
                         memo="Overdraft Fee",
@@ -657,6 +776,7 @@ async def apply_overdraft_fee(
                 if not account.overdraft_fee_charged:
                     tx = Transaction(
                         child_id=account.child_id,
+                        account_id=account.id,
                         type="debit",
                         amount=fee,
                         memo="Overdraft Fee",
@@ -675,11 +795,16 @@ async def apply_overdraft_fee(
 
 
 async def post_transaction_update(db: AsyncSession, child_id: int) -> None:
-    await recalc_interest(db, child_id)
+    """Recalculate interest for all accounts and apply fees after a transaction."""
+    accounts = await get_accounts_by_child(db, child_id)
+    for account in accounts:
+        if account.account_type in ("savings", "college_savings"):
+            await recalc_interest(db, account.id)
     settings = await get_settings(db)
-    account = await get_account_by_child(db, child_id)
-    if account:
-        await apply_overdraft_fee(db, account, settings, date.today())
+    # Apply fees to checking account only (or all accounts if needed)
+    checking_account = await get_checking_account_by_child(db, child_id)
+    if checking_account:
+        await apply_overdraft_fee(db, checking_account, settings, date.today())
 
 
 async def apply_promotion(
@@ -689,18 +814,22 @@ async def apply_promotion(
     credit: bool,
     memo: str | None = None,
 ) -> int:
-    """Apply a promotional credit or debit to every account."""
+    """Apply a promotional credit or debit to every checking account."""
 
     accounts = await get_all_accounts(db)
     count = 0
     for account in accounts:
-        balance = await calculate_balance(db, account.child_id)
+        # Only apply promotions to checking accounts
+        if account.account_type != "checking":
+            continue
+        balance = await calculate_balance(db, account.id)
         adj = amount * balance if is_percentage else amount
         adj = round(adj, 2)
         if adj == 0:
             continue
         tx = Transaction(
             child_id=account.child_id,
+            account_id=account.id,
             type="credit" if credit else "debit",
             amount=abs(adj),
             memo=memo or "Promotion",
@@ -836,6 +965,10 @@ async def redeem_cd(
     if cd.matures_at:
         matured = matured or datetime.utcnow() >= cd.matures_at
 
+    checking_account = await get_checking_account_by_child(db, cd.child_id)
+    if not checking_account:
+        return cd
+    
     if matured:
         payout = round(cd.amount * (1 + cd.interest_rate), 2)
         payout_time = (
@@ -845,6 +978,7 @@ async def redeem_cd(
             db,
             Transaction(
                 child_id=cd.child_id,
+                account_id=checking_account.id,
                 type="credit",
                 amount=payout,
                 memo=f"CD #{cd.id} maturity",
@@ -858,6 +992,7 @@ async def redeem_cd(
             db,
             Transaction(
                 child_id=cd.child_id,
+                account_id=checking_account.id,
                 type="credit",
                 amount=cd.amount,
                 memo=f"CD #{cd.id} early withdrawal",
@@ -865,12 +1000,12 @@ async def redeem_cd(
                 initiator_id=0,
             ),
         )
-        account = await get_account_by_child(db, cd.child_id)
-        penalty_rate = account.cd_penalty_rate if account else 0.1
+        penalty_rate = checking_account.cd_penalty_rate
         await create_transaction(
             db,
             Transaction(
                 child_id=cd.child_id,
+                account_id=checking_account.id,
                 type="debit",
                 amount=round(cd.amount * penalty_rate, 2),
                 memo=f"CD #{cd.id} early withdrawal penalty",
@@ -882,11 +1017,7 @@ async def redeem_cd(
     cd.status = "redeemed"
     cd.redeemed_at = datetime.utcnow()
     await save_cd(db, cd)
-    await recalc_interest(db, cd.child_id)
-    settings = await get_settings(db)
-    account = await get_account_by_child(db, cd.child_id)
-    if account:
-        await apply_overdraft_fee(db, account, settings, date.today())
+    await post_transaction_update(db, cd.child_id)
     return cd
 
 
@@ -957,10 +1088,14 @@ async def process_due_recurring_charges(db: AsyncSession) -> None:
     charges = result.scalars().all()
     for charge in charges:
         while charge.next_run <= today and charge.active:
+            checking_account = await get_checking_account_by_child(db, charge.child_id)
+            if not checking_account:
+                continue
             await create_transaction(
                 db,
                 Transaction(
                     child_id=charge.child_id,
+                    account_id=checking_account.id,
                     type=charge.type,
                     amount=charge.amount,
                     memo=charge.memo,

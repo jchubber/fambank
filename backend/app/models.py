@@ -66,7 +66,7 @@ class Child(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
     parents: List["ChildUserLink"] = Relationship(back_populates="child")
-    account: Optional["Account"] = Relationship(back_populates="child")
+    accounts: List["Account"] = Relationship(back_populates="child")
     transactions: List["Transaction"] = Relationship(back_populates="child")
     withdrawal_requests: List["WithdrawalRequest"] = Relationship(
         back_populates="child"
@@ -101,17 +101,19 @@ class Account(SQLModel, table=True):
     """Per‑child ledger account storing running balances and rates."""
     id: Optional[int] = Field(default=None, primary_key=True)
     child_id: int = Field(foreign_key="child.id")
+    account_type: str = "checking"  # "checking", "savings", "college_savings"
     balance: float = 0.0
     interest_rate: float = 0.01  # Daily rate for positive balances
     penalty_interest_rate: float = 0.02  # Daily rate applied when balance < 0
     cd_penalty_rate: float = 0.1  # Penalty for early CD withdrawal
+    lockup_period_days: Optional[int] = None  # Only used for savings accounts
     last_interest_applied: Optional[date] = None
     total_interest_earned: float = 0.0
     service_fee_last_charged: Optional[date] = None
     overdraft_fee_last_charged: Optional[date] = None
     overdraft_fee_charged: bool = False
 
-    child: Child = Relationship(back_populates="account")
+    child: Child = Relationship(back_populates="accounts")
 
 
 class Transaction(SQLModel, table=True):
@@ -121,6 +123,7 @@ class Transaction(SQLModel, table=True):
         default=None, primary_key=True, alias="transaction_id"
     )
     child_id: int = Field(foreign_key="child.id")
+    account_id: int = Field(foreign_key="account.id")
     type: str  # "credit" or "debit"
     amount: float
     memo: Optional[str] = None
@@ -129,12 +132,14 @@ class Transaction(SQLModel, table=True):
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
     child: Child = Relationship(back_populates="transactions")
+    account: "Account" = Relationship()
 
 
 class WithdrawalRequest(SQLModel, table=True):
     """Parent‑approved withdrawal initiated by a child."""
     id: Optional[int] = Field(default=None, primary_key=True)
     child_id: int = Field(foreign_key="child.id")
+    account_type: str = "checking"  # "checking", "savings", "college_savings"
     amount: float
     memo: Optional[str] = None
     status: str = "pending"  # pending, approved, denied, cancelled
@@ -233,7 +238,9 @@ class Settings(SQLModel, table=True):
     id: Optional[int] = Field(default=1, primary_key=True)
     site_name: str = "Uncle Jon's Bank"
     site_url: str = "http://localhost:5173"
-    default_interest_rate: float = 0.01
+    savings_account_interest_rate: float = 0.01
+    college_savings_account_interest_rate: float = 0.01
+    savings_account_lockup_period_days: int = 30
     default_penalty_interest_rate: float = 0.02
     default_cd_penalty_rate: float = 0.1
     service_fee_amount: float = 0.0

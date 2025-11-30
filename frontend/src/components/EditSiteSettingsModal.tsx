@@ -3,7 +3,9 @@ import { useState, type FormEvent } from 'react'
 interface SiteSettings {
   site_name: string
   site_url: string
-  default_interest_rate: number
+  savings_account_interest_rate: number
+  college_savings_account_interest_rate: number
+  savings_account_lockup_period_days: number
   default_penalty_interest_rate: number
   default_cd_penalty_rate: number
   service_fee_amount: number
@@ -27,7 +29,9 @@ export default function EditSiteSettingsModal({ settings, token, apiUrl, onClose
   const [form, setForm] = useState({
     site_name: settings.site_name,
     site_url: settings.site_url,
-    default_interest_rate: (settings.default_interest_rate * 100).toString(),
+    savings_account_interest_rate: (settings.savings_account_interest_rate * 100).toString(),
+    college_savings_account_interest_rate: (settings.college_savings_account_interest_rate * 100).toString(),
+    savings_account_lockup_period_days: settings.savings_account_lockup_period_days.toString(),
     default_penalty_interest_rate: (settings.default_penalty_interest_rate * 100).toString(),
     default_cd_penalty_rate: (settings.default_cd_penalty_rate * 100).toString(),
     service_fee_amount: settings.service_fee_amount.toString(),
@@ -52,7 +56,9 @@ export default function EditSiteSettingsModal({ settings, token, apiUrl, onClose
       body: JSON.stringify({
         site_name: form.site_name,
         site_url: form.site_url,
-        default_interest_rate: Number(form.default_interest_rate) / 100,
+        savings_account_interest_rate: Number(form.savings_account_interest_rate) / 100,
+        college_savings_account_interest_rate: Number(form.college_savings_account_interest_rate) / 100,
+        savings_account_lockup_period_days: Number(form.savings_account_lockup_period_days),
         default_penalty_interest_rate: Number(form.default_penalty_interest_rate) / 100,
         default_cd_penalty_rate: Number(form.default_cd_penalty_rate) / 100,
         service_fee_amount: Number(form.service_fee_amount),
@@ -86,8 +92,16 @@ export default function EditSiteSettingsModal({ settings, token, apiUrl, onClose
             <input name="currency_symbol" value={form.currency_symbol} onChange={handleChange} required />
           </label>
           <label>
-            Default Interest Rate (%)
-            <input name="default_interest_rate" type="number" step="0.01" value={form.default_interest_rate} onChange={handleChange} required />
+            Savings Account Interest Rate (%)
+            <input name="savings_account_interest_rate" type="number" step="0.01" value={form.savings_account_interest_rate} onChange={handleChange} required />
+          </label>
+          <label>
+            College Savings Account Interest Rate (%)
+            <input name="college_savings_account_interest_rate" type="number" step="0.01" value={form.college_savings_account_interest_rate} onChange={handleChange} required />
+          </label>
+          <label>
+            Savings Account Lockup Period (days)
+            <input name="savings_account_lockup_period_days" type="number" step="1" value={form.savings_account_lockup_period_days} onChange={handleChange} required />
           </label>
           <label>
             Penalty Interest Rate (%)

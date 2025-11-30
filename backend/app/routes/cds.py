@@ -71,13 +71,18 @@ async def accept_cd(
     cd = await _get_child_cd(db, cd_id, child.id)
     if cd.status != "offered":
         raise HTTPException(status_code=400, detail="Cannot accept")
-    balance = await calculate_balance(db, child.id)
+    from app.crud import get_checking_account_by_child
+    checking_account = await get_checking_account_by_child(db, child.id)
+    if not checking_account:
+        raise HTTPException(status_code=404, detail="Checking account not found")
+    balance = await calculate_balance(db, checking_account.id)
     if balance < cd.amount:
         raise HTTPException(status_code=400, detail="Insufficient funds")
     await create_transaction(
         db,
         Transaction(
             child_id=child.id,
+            account_id=checking_account.id,
             type="debit",
             amount=cd.amount,
             memo=f"CD #{cd.id} purchase",
