@@ -9,9 +9,13 @@ interface Props {
   siteName: string
   onToggleTheme: () => void
   theme: 'light' | 'dark'
+  choresUiEnabled: boolean
+  loansUiEnabled: boolean
+  couponsUiEnabled: boolean
+  messagesUiEnabled: boolean
 }
 
-export default function Header({ onLogout, isAdmin, isChild, siteName, onToggleTheme, theme }: Props) {
+export default function Header({ onLogout, isAdmin, isChild, siteName, onToggleTheme, theme, choresUiEnabled, loansUiEnabled, couponsUiEnabled, messagesUiEnabled }: Props) {
   return (
     <header className="header">
       <Logo alt={`${siteName} Logo`} className="logo" transparent={true} />
@@ -20,11 +24,11 @@ export default function Header({ onLogout, isAdmin, isChild, siteName, onToggleT
           {isChild ? (
               <>
                 <li><NavLink to="/child" className={({isActive}) => isActive ? 'active' : undefined}>Ledger</NavLink></li>
-                <li><NavLink to="/child/loans" className={({isActive}) => isActive ? 'active' : undefined}>Loans</NavLink></li>
-                <li><NavLink to="/child/chores" className={({isActive}) => isActive ? 'active' : undefined}>Chores</NavLink></li>
-                <li><NavLink to="/child/coupons" className={({isActive}) => isActive ? 'active' : undefined}>Coupons</NavLink></li>
+                {loansUiEnabled && <li><NavLink to="/child/loans" className={({isActive}) => isActive ? 'active' : undefined}>Loans</NavLink></li>}
+                {choresUiEnabled && <li><NavLink to="/child/chores" className={({isActive}) => isActive ? 'active' : undefined}>Chores</NavLink></li>}
+                {couponsUiEnabled && <li><NavLink to="/child/coupons" className={({isActive}) => isActive ? 'active' : undefined}>Coupons</NavLink></li>}
                 <li><NavLink to="/child/bank101" className={({isActive}) => isActive ? 'active' : undefined}>Bank 101</NavLink></li>
-                <li><NavLink to="/child/messages" className={({isActive}) => isActive ? 'active' : undefined}>Messages</NavLink></li>
+                {messagesUiEnabled && <li><NavLink to="/child/messages" className={({isActive}) => isActive ? 'active' : undefined}>Messages</NavLink></li>}
                 <li><NavLink to="/child/profile" className={({isActive}) => isActive ? 'active' : undefined}>Profile</NavLink></li>
               </>
             ) : (

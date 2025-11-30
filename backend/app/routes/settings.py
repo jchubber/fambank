@@ -29,6 +29,10 @@ async def read_settings(db: AsyncSession = Depends(get_session)):
         overdraft_fee_daily=settings.overdraft_fee_daily,
         currency_symbol=settings.currency_symbol,
         public_registration_disabled=settings.public_registration_disabled,
+        chores_ui_enabled=settings.chores_ui_enabled,
+        loans_ui_enabled=settings.loans_ui_enabled,
+        coupons_ui_enabled=settings.coupons_ui_enabled,
+        messages_ui_enabled=settings.messages_ui_enabled,
     )
 
 
@@ -56,4 +60,8 @@ async def update_settings(
         overdraft_fee_daily=updated.overdraft_fee_daily,
         currency_symbol=updated.currency_symbol,
         public_registration_disabled=updated.public_registration_disabled,
+        chores_ui_enabled=updated.chores_ui_enabled,
+        loans_ui_enabled=updated.loans_ui_enabled,
+        coupons_ui_enabled=updated.coupons_ui_enabled,
+        messages_ui_enabled=updated.messages_ui_enabled,
     )

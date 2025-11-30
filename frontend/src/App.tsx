@@ -34,6 +34,10 @@ function App() {
   const [siteName, setSiteName] = useState("Uncle Jon's Bank")
   const [currencySymbol, setCurrencySymbol] = useState('$')
   const [registrationDisabled, setRegistrationDisabled] = useState(false)
+  const [choresUiEnabled, setChoresUiEnabled] = useState(true)
+  const [loansUiEnabled, setLoansUiEnabled] = useState(true)
+  const [couponsUiEnabled, setCouponsUiEnabled] = useState(true)
+  const [messagesUiEnabled, setMessagesUiEnabled] = useState(true)
   const [theme, setTheme] = useState<'light' | 'dark'>(() =>
     document.documentElement.classList.contains('dark') ? 'dark' : 'light',
   )
@@ -106,6 +110,10 @@ function App() {
       setSiteName(data.site_name)
       setCurrencySymbol(data.currency_symbol || '$')
       setRegistrationDisabled(data.public_registration_disabled || false)
+      setChoresUiEnabled(data.chores_ui_enabled !== undefined ? data.chores_ui_enabled : true)
+      setLoansUiEnabled(data.loans_ui_enabled !== undefined ? data.loans_ui_enabled : true)
+      setCouponsUiEnabled(data.coupons_ui_enabled !== undefined ? data.coupons_ui_enabled : true)
+      setMessagesUiEnabled(data.messages_ui_enabled !== undefined ? data.messages_ui_enabled : true)
       document.title = data.site_name
     }
   }, [apiUrl])
@@ -142,6 +150,10 @@ function App() {
           siteName={siteName}
           onToggleTheme={toggleTheme}
           theme={theme}
+          choresUiEnabled={choresUiEnabled}
+          loansUiEnabled={loansUiEnabled}
+          couponsUiEnabled={couponsUiEnabled}
+          messagesUiEnabled={messagesUiEnabled}
         />
         <Routes>
           {isChildAccount && childId !== null && (
@@ -184,11 +196,11 @@ function App() {
             />
             <Route
               path="/parent/chores"
-              element={<ParentChores token={token} apiUrl={apiUrl} currencySymbol={currencySymbol} />}
+              element={<ParentChores token={token} apiUrl={apiUrl} currencySymbol={currencySymbol} isAdmin={isAdmin} />}
             />
             <Route
               path="/parent/loans"
-              element={<ParentLoans token={token} apiUrl={apiUrl} currencySymbol={currencySymbol} />}
+              element={<ParentLoans token={token} apiUrl={apiUrl} currencySymbol={currencySymbol} isAdmin={isAdmin} />}
             />
             <Route
               path="/parent/coupons"

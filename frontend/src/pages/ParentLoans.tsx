@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { formatCurrency } from '../utils/currency'
+import { useToast } from '../components/ToastProvider'
 
 interface Child {
   id: number
@@ -20,9 +21,10 @@ interface Props {
   token: string
   apiUrl: string
   currencySymbol: string
+  isAdmin: boolean
 }
 
-export default function ParentLoans({ token, apiUrl, currencySymbol }: Props) {
+export default function ParentLoans({ token, apiUrl, currencySymbol, isAdmin }: Props) {
   const [children, setChildren] = useState<Child[]>([])
   const [selectedChild, setSelectedChild] = useState<number | null>(null)
   const [loans, setLoans] = useState<Loan[]>([])
@@ -30,6 +32,8 @@ export default function ParentLoans({ token, apiUrl, currencySymbol }: Props) {
   const [approveTerms, setApproveTerms] = useState<Record<number, string>>({})
   const [paymentAmount, setPaymentAmount] = useState<Record<number, string>>({})
   const [newRate, setNewRate] = useState<Record<number, string>>({})
+  const [loansUiEnabled, setLoansUiEnabled] = useState(true)
+  const { showToast } = useToast()
 
   const fetchChildren = useCallback(async () => {
     const resp = await fetch(`${apiUrl}/children/`, {
@@ -48,9 +52,36 @@ export default function ParentLoans({ token, apiUrl, currencySymbol }: Props) {
     [apiUrl, token],
   )
 
+  const fetchSettings = useCallback(async () => {
+    const resp = await fetch(`${apiUrl}/settings/`)
+    if (resp.ok) {
+      const data = await resp.json()
+      setLoansUiEnabled(data.loans_ui_enabled !== undefined ? data.loans_ui_enabled : true)
+    }
+  }, [apiUrl])
+
+  const toggleLoansUi = async () => {
+    const newValue = !loansUiEnabled
+    const resp = await fetch(`${apiUrl}/settings/`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ loans_ui_enabled: newValue }),
+    })
+    if (resp.ok) {
+      setLoansUiEnabled(newValue)
+      showToast(newValue ? 'Loans UI enabled for children' : 'Loans UI disabled for children')
+    } else {
+      showToast('Failed to update setting', 'error')
+    }
+  }
+
   useEffect(() => {
     fetchChildren()
-  }, [fetchChildren])
+    fetchSettings()
+  }, [fetchChildren, fetchSettings])
 
   useEffect(() => {
     if (selectedChild) fetchLoans(selectedChild)
@@ -117,6 +148,13 @@ export default function ParentLoans({ token, apiUrl, currencySymbol }: Props) {
   return (
     <div className="container">
       <h2>Manage Loans</h2>
+      {isAdmin && (
+        <div style={{ marginBottom: '1rem' }}>
+          <button onClick={toggleLoansUi}>
+            {loansUiEnabled ? 'Disable Loans UI for Children' : 'Enable Loans UI for Children'}
+          </button>
+        </div>
+      )}
       Loans are useful when your child wants to borrow money for something special, like a new game or a bike. You can approve or deny their requests, and help them learn about interest rates and payments.
       <p>Once a loan is approved, you'll see a credit in your child's account for the full loan amount. You should then deduct whatever they bought with the loan out as a new transaction (e.g., "New Phone"). </p>
 

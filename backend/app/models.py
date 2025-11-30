@@ -243,6 +243,10 @@ class Settings(SQLModel, table=True):
     overdraft_fee_daily: bool = False
     currency_symbol: str = "$"
     public_registration_disabled: bool = False
+    chores_ui_enabled: bool = True
+    loans_ui_enabled: bool = True
+    coupons_ui_enabled: bool = True
+    messages_ui_enabled: bool = True
 
 
 class Message(SQLModel, table=True):

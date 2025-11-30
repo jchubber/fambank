@@ -97,6 +97,30 @@ async def create_db_and_tables() -> None:
                     "ALTER TABLE settings ADD COLUMN currency_symbol VARCHAR DEFAULT '$'"
                 )
             )
+        if not await has_column("settings", "chores_ui_enabled"):
+            await conn.execute(
+                text(
+                    "ALTER TABLE settings ADD COLUMN chores_ui_enabled BOOLEAN DEFAULT 1"
+                )
+            )
+        if not await has_column("settings", "loans_ui_enabled"):
+            await conn.execute(
+                text(
+                    "ALTER TABLE settings ADD COLUMN loans_ui_enabled BOOLEAN DEFAULT 1"
+                )
+            )
+        if not await has_column("settings", "coupons_ui_enabled"):
+            await conn.execute(
+                text(
+                    "ALTER TABLE settings ADD COLUMN coupons_ui_enabled BOOLEAN DEFAULT 1"
+                )
+            )
+        if not await has_column("settings", "messages_ui_enabled"):
+            await conn.execute(
+                text(
+                    "ALTER TABLE settings ADD COLUMN messages_ui_enabled BOOLEAN DEFAULT 1"
+                )
+            )
 
         # RecurringCharge table columns
         if not await has_column("recurringcharge", "type"):

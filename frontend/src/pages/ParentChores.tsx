@@ -19,15 +19,17 @@ interface Props {
   token: string
   apiUrl: string
   currencySymbol: string
+  isAdmin: boolean
 }
 
-export default function ParentChores({ token, apiUrl, currencySymbol }: Props) {
+export default function ParentChores({ token, apiUrl, currencySymbol, isAdmin }: Props) {
   const [children, setChildren] = useState<Child[]>([])
   const [selected, setSelected] = useState<number | null>(null)
   const [chores, setChores] = useState<Chore[]>([])
   const [desc, setDesc] = useState('')
   const [amount, setAmount] = useState('')
   const [interval, setInterval] = useState('')
+  const [choresUiEnabled, setChoresUiEnabled] = useState(true)
   const { showToast } = useToast()
 
   const fetchChildren = async () => {
@@ -44,8 +46,35 @@ export default function ParentChores({ token, apiUrl, currencySymbol }: Props) {
     if (resp.ok) setChores(await resp.json())
   }
 
+  const fetchSettings = async () => {
+    const resp = await fetch(`${apiUrl}/settings/`)
+    if (resp.ok) {
+      const data = await resp.json()
+      setChoresUiEnabled(data.chores_ui_enabled !== undefined ? data.chores_ui_enabled : true)
+    }
+  }
+
+  const toggleChoresUi = async () => {
+    const newValue = !choresUiEnabled
+    const resp = await fetch(`${apiUrl}/settings/`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ chores_ui_enabled: newValue }),
+    })
+    if (resp.ok) {
+      setChoresUiEnabled(newValue)
+      showToast(newValue ? 'Chores UI enabled for children' : 'Chores UI disabled for children')
+    } else {
+      showToast('Failed to update setting', 'error')
+    }
+  }
+
   useEffect(() => {
     fetchChildren()
+    fetchSettings()
   }, [])
 
   useEffect(() => {
@@ -104,6 +133,13 @@ export default function ParentChores({ token, apiUrl, currencySymbol }: Props) {
   return (
     <div className="container">
       <h2>Chores</h2>
+      {isAdmin && (
+        <div style={{ marginBottom: '1rem' }}>
+          <button onClick={toggleChoresUi}>
+            {choresUiEnabled ? 'Disable Chores UI for Children' : 'Enable Chores UI for Children'}
+          </button>
+        </div>
+      )}
       <div>
         <select value={selected ?? ''} onChange={e => setSelected(e.target.value ? Number(e.target.value) : null)}>
           <option value="">Select child</option>

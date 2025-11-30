@@ -36,11 +36,39 @@ export default function ParentCoupons({ token, apiUrl, isAdmin, currencySymbol }
   const [memo, setMemo] = useState("");
   const [expiration, setExpiration] = useState("");
   const [uses, setUses] = useState("1");
+  const [couponsUiEnabled, setCouponsUiEnabled] = useState(true);
   const { showToast } = useToast();
+
+  const fetchSettings = async () => {
+    const resp = await fetch(`${apiUrl}/settings/`);
+    if (resp.ok) {
+      const data = await resp.json();
+      setCouponsUiEnabled(data.coupons_ui_enabled !== undefined ? data.coupons_ui_enabled : true);
+    }
+  };
+
+  const toggleCouponsUi = async () => {
+    const newValue = !couponsUiEnabled;
+    const resp = await fetch(`${apiUrl}/settings/`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ coupons_ui_enabled: newValue }),
+    });
+    if (resp.ok) {
+      setCouponsUiEnabled(newValue);
+      showToast(newValue ? "Coupons UI enabled for children" : "Coupons UI disabled for children");
+    } else {
+      showToast("Failed to update setting", "error");
+    }
+  };
 
   useEffect(() => {
     fetchChildren();
     fetchCoupons();
+    fetchSettings();
   }, []);
 
   async function fetchChildren() {
@@ -145,6 +173,13 @@ export default function ParentCoupons({ token, apiUrl, isAdmin, currencySymbol }
   return (
     <div className="p-4 max-w-2xl mx-auto">
       <h2>Create Coupon</h2>
+      {isAdmin && (
+        <div style={{ marginBottom: "1rem" }}>
+          <button onClick={toggleCouponsUi}>
+            {couponsUiEnabled ? "Disable Coupons UI for Children" : "Enable Coupons UI for Children"}
+          </button>
+        </div>
+      )}
       <form onSubmit={handleSubmit} className="space-y-2">
         <div>
           <label>Target:</label>

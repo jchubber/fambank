@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import MessageDetail from '../components/MessageDetail'
 import ComposeMessage from '../components/ComposeMessage'
+import { useToast } from '../components/ToastProvider'
 
 interface Message {
   id: number
@@ -30,6 +31,8 @@ export default function MessagesPage({ token, apiUrl, isChild, isAdmin }: Props)
   const [selectedMessage, setSelectedMessage] = useState<Message | null>(null)
   const [showCompose, setShowCompose] = useState(false)
   const [composeDefaults, setComposeDefaults] = useState<{ subject?: string; recipient?: string; target?: string }>({})
+  const [messagesUiEnabled, setMessagesUiEnabled] = useState(true)
+  const { showToast } = useToast()
 
   const headers = {
     Authorization: `Bearer ${token}`,
@@ -53,10 +56,40 @@ export default function MessagesPage({ token, apiUrl, isChild, isAdmin }: Props)
     }
   }
 
+  const fetchSettings = async () => {
+    const resp = await fetch(`${apiUrl}/settings/`)
+    if (resp.ok) {
+      const data = await resp.json()
+      setMessagesUiEnabled(data.messages_ui_enabled !== undefined ? data.messages_ui_enabled : true)
+    }
+  }
+
+  const toggleMessagesUi = async () => {
+    const newValue = !messagesUiEnabled
+    const resp = await fetch(`${apiUrl}/settings/`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ messages_ui_enabled: newValue }),
+    })
+    if (resp.ok) {
+      setMessagesUiEnabled(newValue)
+      showToast(newValue ? 'Messages UI enabled for children' : 'Messages UI disabled for children')
+    } else {
+      showToast('Failed to update setting', 'error')
+    }
+  }
+
   useEffect(() => {
     fetchMessages()
     setSelectedMessage(null)
   }, [tab])
+
+  useEffect(() => {
+    fetchSettings()
+  }, [])
 
   useEffect(() => {
     const loadOptions = async () => {
@@ -178,6 +211,13 @@ export default function MessagesPage({ token, apiUrl, isChild, isAdmin }: Props)
       <div className="messages-page">
         <div className="messages-sidebar">
           <h2>Messages</h2>
+          {isAdmin && (
+            <div style={{ marginBottom: '1rem' }}>
+              <button onClick={toggleMessagesUi}>
+                {messagesUiEnabled ? 'Disable Messages UI for Children' : 'Enable Messages UI for Children'}
+              </button>
+            </div>
+          )}
           <button onClick={() => setTab('inbox')}>Inbox</button>
           <button onClick={() => setTab('sent')}>Sent</button>
           <button onClick={() => setTab('archive')}>Archive</button>

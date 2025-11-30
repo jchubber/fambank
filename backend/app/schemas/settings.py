@@ -18,6 +18,10 @@ class SettingsRead(BaseModel):
     overdraft_fee_daily: bool
     currency_symbol: str
     public_registration_disabled: bool
+    chores_ui_enabled: bool
+    loans_ui_enabled: bool
+    coupons_ui_enabled: bool
+    messages_ui_enabled: bool
 
 
 class SettingsUpdate(BaseModel):
@@ -33,3 +37,7 @@ class SettingsUpdate(BaseModel):
     overdraft_fee_daily: bool | None = None
     currency_symbol: str | None = None
     public_registration_disabled: bool | None = None
+    chores_ui_enabled: bool | None = None
+    loans_ui_enabled: bool | None = None
+    coupons_ui_enabled: bool | None = None
+    messages_ui_enabled: bool | None = None
