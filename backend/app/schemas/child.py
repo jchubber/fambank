@@ -1,8 +1,7 @@
-from pydantic import BaseModel, Field
-from typing import Optional
 """Pydantic models for child accounts and updates."""
 
 from typing import Optional
+from datetime import datetime
 from pydantic import BaseModel, Field
 
 
@@ -10,6 +9,7 @@ class ChildCreate(BaseModel):
     first_name: str
     access_code: str
     frozen: Optional[bool] = False
+    created_at: Optional[datetime] = None  # Optional: allows back-dating account creation
 
 
 class ChildRead(BaseModel):

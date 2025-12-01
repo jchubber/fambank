@@ -114,6 +114,19 @@ class Account(SQLModel, table=True):
     overdraft_fee_charged: bool = False
 
     child: Child = Relationship(back_populates="accounts")
+    rate_history: List["InterestRateHistory"] = Relationship(back_populates="account")
+
+
+class InterestRateHistory(SQLModel, table=True):
+    """Historical record of interest rate changes for an account."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    account_id: int = Field(foreign_key="account.id")
+    date: date  # Date when this rate became effective
+    interest_rate: float  # Daily rate for positive balances
+    penalty_interest_rate: float  # Daily rate for negative balances
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    account: Account = Relationship(back_populates="rate_history")
 
 
 class Transaction(SQLModel, table=True):

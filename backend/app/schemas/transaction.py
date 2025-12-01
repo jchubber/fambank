@@ -1,4 +1,3 @@
-from pydantic import BaseModel, Field
 """Transaction-related request and response models."""
 
 from typing import Optional
@@ -17,6 +16,7 @@ class TransactionBase(BaseModel):
 
 class TransactionCreate(TransactionBase):
     account_id: Optional[int] = None
+    timestamp: Optional[datetime] = None
 
 
 class TransactionUpdate(BaseModel):

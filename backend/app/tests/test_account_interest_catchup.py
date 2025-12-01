@@ -37,6 +37,7 @@ def test_account_interest_catch_up():
             start_date = date.today() - timedelta(days=5)
             account = Account(
                 child_id=child.id,
+                account_type="savings",  # Must be savings or college_savings for interest
                 interest_rate=0.01,
                 penalty_interest_rate=0.02,
                 last_interest_applied=start_date,
@@ -49,6 +50,7 @@ def test_account_interest_catch_up():
                 session,
                 Transaction(
                     child_id=child.id,
+                    account_id=account.id,
                     type="credit",
                     amount=100,
                     memo="Initial deposit",
@@ -58,7 +60,7 @@ def test_account_interest_catch_up():
                 ),
             )
 
-            await recalc_interest(session, child.id)
+            await recalc_interest(session, account.id)
             refreshed = await session.get(Account, account.id)
 
             result = await session.execute(

@@ -1,6 +1,7 @@
 import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from datetime import datetime, timezone
 
 
 """Endpoints for recording and viewing ledger transactions."""
@@ -26,6 +27,7 @@ from app.crud import (
     get_child_user_link,
     get_checking_account_by_child,
     get_account,
+    get_child,
 )
 from app.auth import require_permissions, get_current_user, get_current_identity
 from app.acl import (
@@ -68,6 +70,43 @@ async def add_transaction(
         if perm_needed not in link.permissions and not link.is_owner:
             raise HTTPException(status_code=403, detail="Insufficient permissions")
 
+    # Validate and handle custom timestamp (only for parents and admins)
+    timestamp = transaction.timestamp
+    if timestamp is not None:
+        # Only parents and admins can set custom timestamps
+        if current_user.role not in ("admin", "parent"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only parents and admins can set custom timestamps"
+            )
+        
+        # Normalize timestamp to timezone-aware UTC for all validations
+        if timestamp.tzinfo is None:
+            # Assume UTC if no timezone info
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        
+        # Validate timestamp is not in the future
+        now = datetime.now(timezone.utc)
+        if timestamp > now:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Transaction timestamp cannot be in the future"
+            )
+        
+        # Validate timestamp is after account creation
+        child = await get_child(db, transaction.child_id)
+        if not child:
+            raise HTTPException(status_code=404, detail="Child not found")
+        # Convert child.created_at to timezone-aware for comparison
+        child_created = child.created_at
+        if child_created.tzinfo is None:
+            child_created = child_created.replace(tzinfo=timezone.utc)
+        if timestamp < child_created:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Transaction timestamp cannot be before account creation"
+            )
+
     # Default to checking account if account_id not provided
     account_id = transaction.account_id
     if not account_id:
@@ -85,6 +124,12 @@ async def add_transaction(
         initiated_by=transaction.initiated_by,
         initiator_id=transaction.initiator_id,
     )
+    # Set timestamp if provided, otherwise let default_factory handle it
+    if timestamp is not None:
+        # Remove timezone info for storage (database stores naive UTC)
+        if timestamp.tzinfo is not None:
+            timestamp = timestamp.replace(tzinfo=None)
+        tx_model.timestamp = timestamp
     new_tx = await create_transaction(db, tx_model)
     logger.info(
         "Transaction %s %s for child %s by user %s",

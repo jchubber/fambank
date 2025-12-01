@@ -119,8 +119,10 @@ export default function ParentDashboard({
   const [txType, setTxType] = useState("credit");
   const [txAmount, setTxAmount] = useState("");
   const [txMemo, setTxMemo] = useState("");
+  const [txTimestamp, setTxTimestamp] = useState<string>("");
   const [firstName, setFirstName] = useState("");
   const [accessCode, setAccessCode] = useState("");
+  const [childCreatedAt, setChildCreatedAt] = useState<string>("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [confirmAction, setConfirmAction] = useState<{
     message: string;
@@ -781,26 +783,47 @@ export default function ParentDashboard({
           <form
             onSubmit={async (e) => {
               e.preventDefault();
+              
+              // Validate timestamp if provided
+              let timestamp: string | null = null;
+              if (txTimestamp) {
+                const selectedDate = new Date(txTimestamp);
+                const now = new Date();
+                if (selectedDate > now) {
+                  showToast("Transaction date cannot be in the future", "error");
+                  return;
+                }
+                // Convert to ISO string for backend
+                timestamp = selectedDate.toISOString();
+              }
+              
+              const body: any = {
+                child_id: selectedChild,
+                account_id: txAccountId || (accounts ? accounts.checking.id : null),
+                type: txType,
+                amount: Number(txAmount),
+                memo: txMemo || null,
+                initiated_by: "parent",
+                initiator_id: 0,
+              };
+              
+              if (timestamp) {
+                body.timestamp = timestamp;
+              }
+              
               const resp = await fetch(`${apiUrl}/transactions/`, {
                 method: "POST",
                 headers: {
                   "Content-Type": "application/json",
                   Authorization: `Bearer ${token}`,
                 },
-                body: JSON.stringify({
-                  child_id: selectedChild,
-                  account_id: txAccountId || (accounts ? accounts.checking.id : null),
-                  type: txType,
-                  amount: Number(txAmount),
-                  memo: txMemo || null,
-                  initiated_by: "parent",
-                  initiator_id: 0,
-                }),
+                body: JSON.stringify(body),
               });
               setTxAmount("");
               setTxMemo("");
               setTxType("credit");
               setTxAccountId(null);
+              setTxTimestamp("");
               if (resp.ok && selectedChild !== null) {
                 await fetchAccounts(selectedChild);
                 await fetchLedger(selectedChild, selectedAccountId || (accounts ? accounts.checking.id : null));
@@ -857,6 +880,17 @@ export default function ParentDashboard({
                 onChange={(e) => setTxMemo(e.target.value)}
               />
             </label>
+            {permissions.includes("add_transaction") && (
+              <label>
+                Date & Time (optional - for back-dating)
+                <input
+                  type="datetime-local"
+                  value={txTimestamp}
+                  onChange={(e) => setTxTimestamp(e.target.value)}
+                  max={new Date().toISOString().slice(0, 16)}
+                />
+              </label>
+            )}
           <button type="submit">Add</button>
         </form>
         <form
@@ -932,6 +966,29 @@ export default function ParentDashboard({
         onSubmit={async (e) => {
           e.preventDefault();
           setErrorMessage(null);
+          
+          // Validate created_at if provided
+          let createdAt: string | null = null;
+          if (childCreatedAt) {
+            const selectedDate = new Date(childCreatedAt);
+            const now = new Date();
+            if (selectedDate > now) {
+              setErrorMessage("Account creation date cannot be in the future");
+              return;
+            }
+            // Convert to ISO string for backend
+            createdAt = selectedDate.toISOString();
+          }
+          
+          const body: any = {
+            first_name: firstName,
+            access_code: accessCode,
+          };
+          
+          if (createdAt) {
+            body.created_at = createdAt;
+          }
+          
           try {
             const resp = await fetch(`${apiUrl}/children/`, {
               method: "POST",
@@ -939,19 +996,17 @@ export default function ParentDashboard({
                 "Content-Type": "application/json",
                 Authorization: `Bearer ${token}`,
               },
-              body: JSON.stringify({
-                first_name: firstName,
-                access_code: accessCode,
-              }),
+              body: JSON.stringify(body),
             });
             if (resp.ok) {
               setFirstName("");
               setAccessCode("");
+              setChildCreatedAt("");
               fetchChildren();
             } else {
               const errorData = await resp.json();
               setErrorMessage(
-                errorData.message || "Failed to add child. Please try again.",
+                errorData.detail || errorData.message || "Failed to add child. Please try again.",
               );
             }
           } catch (error) {
@@ -979,6 +1034,17 @@ export default function ParentDashboard({
             required
           />
         </label>
+        {permissions.includes("add_child") && (
+          <label>
+            Account Creation Date (optional - for back-dating)
+            <input
+              type="datetime-local"
+              value={childCreatedAt}
+              onChange={(e) => setChildCreatedAt(e.target.value)}
+              max={new Date().toISOString().slice(0, 16)}
+            />
+          </label>
+        )}
         <button type="submit">Add</button>
       </form>
       {editingChild && (

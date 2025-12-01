@@ -1,7 +1,8 @@
 """Routes for managing child accounts and related settings."""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from datetime import datetime, timezone
 from app.schemas import (
     ChildCreate,
     ChildRead,
@@ -252,11 +253,40 @@ async def create_child_route(
     existing = await get_child_by_access_code(db, child.access_code)
     if existing:
         raise HTTPException(status_code=400, detail="Access code already in use")
+    
+    # Validate and handle custom created_at timestamp (only for parents and admins)
+    created_at = child.created_at
+    if created_at is not None:
+        # Only parents and admins can set custom created_at
+        if current_user.role not in ("admin", "parent"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only parents and admins can set custom account creation dates"
+            )
+        
+        # Validate created_at is not in the future
+        now = datetime.now(timezone.utc)
+        if created_at.tzinfo is None:
+            # Assume UTC if no timezone info
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        if created_at > now:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Account creation date cannot be in the future"
+            )
+    
     child_model = Child(
         first_name=child.first_name,
         access_code=child.access_code,
         account_frozen=child.frozen,
     )
+    # Set created_at if provided, otherwise let default_factory handle it
+    if created_at is not None:
+        # Remove timezone info for storage (database stores naive UTC)
+        if created_at.tzinfo is not None:
+            created_at = created_at.replace(tzinfo=None)
+        child_model.created_at = created_at
+    
     new_child = await create_child_for_user(db, child_model, current_user.id)
     account = await get_account_by_child(db, new_child.id)
     return ChildRead(

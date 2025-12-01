@@ -33,6 +33,7 @@ from app.models import (
     QuizQuestion,
     Badge,
     ChildBadge,
+    InterestRateHistory,
 )
 from app.auth import get_password_hash, get_child_by_id
 from app.acl import get_default_permissions_for_role, ALL_PERMISSIONS
@@ -441,6 +442,34 @@ async def get_all_accounts(db: AsyncSession) -> list[Account]:
     return result.scalars().all()
 
 
+async def get_interest_rate_for_date(
+    db: AsyncSession, account_id: int, target_date: date
+) -> tuple[float, float]:
+    """Get the interest rate and penalty interest rate that were effective on a given date.
+    
+    Returns (interest_rate, penalty_interest_rate) tuple.
+    If no history exists, returns current account rates (backward compatibility).
+    """
+    result = await db.execute(
+        select(InterestRateHistory)
+        .where(
+            InterestRateHistory.account_id == account_id,
+            InterestRateHistory.date <= target_date,
+        )
+        .order_by(InterestRateHistory.date.desc(), InterestRateHistory.created_at.desc())
+        .limit(1)
+    )
+    history = result.scalar_one_or_none()
+    if history:
+        return (history.interest_rate, history.penalty_interest_rate)
+    
+    # Backward compatibility: return current account rates if no history
+    account = await db.get(Account, account_id)
+    if account:
+        return (account.interest_rate, account.penalty_interest_rate)
+    return (0.01, 0.02)  # Default fallback
+
+
 async def set_interest_rate(
     db: AsyncSession, child_id: int, rate: float, account_type: str = "checking"
 ) -> Account:
@@ -448,6 +477,78 @@ async def set_interest_rate(
     account = await get_account_by_child_and_type(db, child_id, account_type)
     if not account:
         raise ValueError("Account not found")
+    
+    # Only create history entry if rate actually changed
+    if account.interest_rate != rate:
+        today = date.today()
+        old_rate = account.interest_rate
+        
+        # Check if we already have an entry for today
+        existing_result = await db.execute(
+            select(InterestRateHistory)
+            .where(
+                InterestRateHistory.account_id == account.id,
+                InterestRateHistory.date == today,
+            )
+            .order_by(InterestRateHistory.created_at.desc())
+            .limit(1)
+        )
+        existing_entry = existing_result.scalar_one_or_none()
+        if existing_entry:
+            # Update existing entry if rate changed
+            existing_entry.interest_rate = rate
+        else:
+            # Check if this is the first history entry
+            first_history_result = await db.execute(
+                select(InterestRateHistory)
+                .where(InterestRateHistory.account_id == account.id)
+                .order_by(InterestRateHistory.date)
+                .limit(1)
+            )
+            first_history = first_history_result.scalar_one_or_none()
+            
+            if not first_history:
+                # This is the first history entry - create entry for OLD rate backdated appropriately
+                # Try to backdate to first transaction date, otherwise use account creation date
+                first_tx_result = await db.execute(
+                    select(func.min(Transaction.timestamp))
+                    .where(Transaction.account_id == account.id)
+                )
+                first_tx_time = first_tx_result.scalar_one_or_none()
+                
+                if first_tx_time:
+                    history_date = first_tx_time.date()
+                    # Ensure it's in the past (not today or future)
+                    if history_date >= today:
+                        history_date = today - timedelta(days=1)
+                else:
+                    child = await get_child(db, account.child_id)
+                    if child:
+                        history_date = child.created_at.date()
+                        # Ensure it's in the past (not today or future)
+                        if history_date >= today:
+                            history_date = today - timedelta(days=1)
+                    else:
+                        history_date = today - timedelta(days=1)  # Use yesterday to ensure it's before today
+                
+                # Create history entry for the OLD rate (backdated)
+                old_history = InterestRateHistory(
+                    account_id=account.id,
+                    date=history_date,
+                    interest_rate=old_rate,
+                    penalty_interest_rate=account.penalty_interest_rate,
+                )
+                db.add(old_history)
+            
+            # Create new history entry for the NEW rate (today)
+            new_history = InterestRateHistory(
+                account_id=account.id,
+                date=today,
+                interest_rate=rate,
+                penalty_interest_rate=account.penalty_interest_rate,
+            )
+            db.add(new_history)
+    
     account.interest_rate = rate
     db.add(account)
     await db.commit()
@@ -462,6 +563,32 @@ async def set_penalty_interest_rate(
     account = await get_account_by_child_and_type(db, child_id, account_type)
     if not account:
         raise ValueError("Account not found")
+    
+    # Only create history entry if rate actually changed
+    if account.penalty_interest_rate != rate:
+        today = date.today()
+        # Check if we already have an entry for today with this rate
+        existing = await db.execute(
+            select(InterestRateHistory)
+            .where(
+                InterestRateHistory.account_id == account.id,
+                InterestRateHistory.date == today,
+            )
+        )
+        existing_entry = existing.scalar_one_or_none()
+        if existing_entry:
+            # Update existing entry
+            existing_entry.penalty_interest_rate = rate
+        else:
+            # Create new history entry
+            history = InterestRateHistory(
+                account_id=account.id,
+                date=today,
+                interest_rate=account.interest_rate,
+                penalty_interest_rate=rate,
+            )
+            db.add(history)
+    
     account.penalty_interest_rate = rate
     db.add(account)
     await db.commit()
@@ -616,7 +743,15 @@ async def calculate_available_balance(db: AsyncSession, account_id: int) -> floa
 
 
 async def recalc_interest(db: AsyncSession, account_id: int) -> None:
-    """Recalculate and post daily interest transactions for a specific account."""
+    """Recalculate and post daily interest transactions for a specific account.
+    
+    This function always recalculates ALL interest from the first transaction to today,
+    using an optimized single-pass approach:
+    1. Single query to get all transactions
+    2. Batch delete all existing interest transactions
+    3. Single in-memory pass to calculate all interest
+    4. Batch insert all new interest transactions
+    """
     account = await db.get(Account, account_id)
     if not account:
         raise ValueError("Account not found")
@@ -625,88 +760,138 @@ async def recalc_interest(db: AsyncSession, account_id: int) -> None:
     if account.account_type == "checking":
         return
 
-    # Determine starting point for recalculation
-    first_tx_result = await db.execute(
-        select(func.min(Transaction.timestamp)).where(
-            Transaction.account_id == account_id
-        )
+    # Single query: Get ALL transactions for account (including old interest) ordered by timestamp
+    result = await db.execute(
+        select(Transaction)
+        .where(Transaction.account_id == account_id)
+        .order_by(Transaction.timestamp)
     )
-    first_tx_time = first_tx_result.scalar_one_or_none()
-    if not first_tx_time:
+    all_transactions = list(result.scalars().all())
+    
+    if not all_transactions:
+        # No transactions, just update last_interest_applied
         account.last_interest_applied = date.today()
+        account.total_interest_earned = 0.0
         db.add(account)
         await db.commit()
         return
 
-    start_date = account.last_interest_applied or first_tx_time.date()
+    # Batch delete: Delete all existing interest transactions
+    await db.execute(
+        delete(Transaction).where(
+            Transaction.account_id == account_id,
+            Transaction.memo == "Interest",
+            Transaction.initiated_by == "system",
+        )
+    )
+    await db.commit()
+
+    # Pre-load all rate history entries for efficient lookups
+    rate_history_result = await db.execute(
+        select(InterestRateHistory)
+        .where(InterestRateHistory.account_id == account_id)
+        .order_by(InterestRateHistory.date)
+    )
+    rate_history = list(rate_history_result.scalars().all())
+    
+    # Create a function to get rates for a given date (using pre-loaded history)
+    def get_rates_for_date(target_date: date) -> tuple[float, float]:
+        """Get rates for a date using pre-loaded history."""
+        # Find the most recent history entry on or before target_date
+        for entry in reversed(rate_history):
+            if entry.date <= target_date:
+                return (entry.interest_rate, entry.penalty_interest_rate)
+        # Fallback to current account rates if no history
+        return (account.interest_rate, account.penalty_interest_rate)
+
+    # Single in-memory pass: Calculate all interest
+    current_balance = 0.0
+    total_interest = 0.0
+    current_day = None
+    interest_transactions = []
     today = date.today()
 
-    # Balance prior to start_date
-    bal_before_result = await db.execute(
-        select(
-            func.coalesce(
-                func.sum(
-                    case(
-                        (Transaction.type == "credit", Transaction.amount),
-                        else_=-Transaction.amount,
+    for tx in all_transactions:
+        # Skip old interest transactions (we just deleted them, but they're still in the list)
+        if tx.memo == "Interest" and tx.initiated_by == "system":
+            continue
+
+        tx_day = tx.timestamp.date()
+
+        # If we've moved to a new day, calculate interest for the previous day
+        if current_day is not None and tx_day > current_day:
+            # Calculate interest for all days between current_day and tx_day
+            day = current_day
+            while day < tx_day and day < today:
+                # Get historical rate for this day (in-memory lookup)
+                interest_rate, penalty_rate = get_rates_for_date(day)
+                
+                # Determine which rate to use based on balance
+                rate = interest_rate if current_balance >= 0 else penalty_rate
+                interest = current_balance * rate
+                
+                if interest != 0:
+                    # Interest transaction timestamped at start of next day
+                    tx_time = datetime.combine(day + timedelta(days=1), time.min)
+                    interest_tx = Transaction(
+                        child_id=account.child_id,
+                        account_id=account_id,
+                        type="credit" if interest >= 0 else "debit",
+                        amount=abs(interest),
+                        memo="Interest",
+                        initiated_by="system",
+                        initiator_id=0,
+                        timestamp=tx_time,
                     )
-                ),
-                0.0,
-            )
-        ).where(
-            Transaction.account_id == account_id,
-            Transaction.timestamp < datetime.combine(start_date, time.min),
-        )
-    )
-    current_balance = float(bal_before_result.scalar_one())
+                    interest_transactions.append(interest_tx)
+                    current_balance += interest  # Compound it
+                    total_interest += interest
 
-    result = await db.execute(
-        select(Transaction)
-        .where(
-            Transaction.account_id == account_id,
-            Transaction.timestamp >= datetime.combine(start_date, time.min),
-        )
-        .order_by(Transaction.timestamp)
-    )
-    txs = list(result.scalars().all())
+                day += timedelta(days=1)
 
-    total_interest = account.total_interest_earned
-    tx_idx = 0
+        # Process the transaction
+        if tx.type == "credit":
+            current_balance += tx.amount
+        else:
+            current_balance -= tx.amount
 
-    day = start_date
-    while day < today:
-        while tx_idx < len(txs) and txs[tx_idx].timestamp.date() == day:
-            tx = txs[tx_idx]
-            if tx.type == "credit":
-                current_balance += tx.amount
-            else:
-                current_balance -= tx.amount
-            tx_idx += 1
+        current_day = tx_day
 
-        rate = (
-            account.interest_rate
-            if current_balance >= 0
-            else account.penalty_interest_rate
-        )
-        interest = current_balance * rate
-        if interest != 0:
-            tx_time = datetime.combine(day + timedelta(days=1), time.min)
-            interest_tx = Transaction(
-                child_id=account.child_id,
-                account_id=account_id,
-                type="credit" if interest >= 0 else "debit",
-                amount=abs(interest),
-                memo="Interest",
-                initiated_by="system",
-                initiator_id=0,
-                timestamp=tx_time,
-            )
-            db.add(interest_tx)
-            current_balance += interest
-            total_interest += interest
+    # Calculate interest for remaining days up to today
+    if current_day and current_day < today:
+        day = current_day
+        while day < today:
+            # Get historical rate for this day (in-memory lookup)
+            interest_rate, penalty_rate = get_rates_for_date(day)
+            
+            # Determine which rate to use based on balance
+            rate = interest_rate if current_balance >= 0 else penalty_rate
+            interest = current_balance * rate
+            
+            if interest != 0:
+                # Interest transaction timestamped at start of next day
+                tx_time = datetime.combine(day + timedelta(days=1), time.min)
+                interest_tx = Transaction(
+                    child_id=account.child_id,
+                    account_id=account_id,
+                    type="credit" if interest >= 0 else "debit",
+                    amount=abs(interest),
+                    memo="Interest",
+                    initiated_by="system",
+                    initiator_id=0,
+                    timestamp=tx_time,
+                )
+                interest_transactions.append(interest_tx)
+                current_balance += interest  # Compound it
+                total_interest += interest
 
-        day += timedelta(days=1)
+            day += timedelta(days=1)
 
+    # Batch insert: Add all new interest transactions
+    if interest_transactions:
+        db.add_all(interest_transactions)
+
+    # Update account metadata
     account.total_interest_earned = total_interest
     account.last_interest_applied = today
     db.add(account)
@@ -795,7 +980,11 @@ async def apply_overdraft_fee(
 
 
 async def post_transaction_update(db: AsyncSession, child_id: int) -> None:
-    """Recalculate interest for all accounts and apply fees after a transaction."""
+    """Recalculate interest for all accounts and apply fees after a transaction.
+    
+    The optimized recalc_interest() handles all edge cases including back-dated
+    transactions, so we always call it for savings/college_savings accounts.
+    """
     accounts = await get_accounts_by_child(db, child_id)
     for account in accounts:
         if account.account_type in ("savings", "college_savings"):

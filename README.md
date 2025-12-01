@@ -29,6 +29,7 @@ The goal is to teach kids about money through experience — without handing ove
   - **College Savings Account**: Earns daily interest at a separate admin-configurable rate (different from savings account rate). Funds can only be withdrawn by admins for educational expenses. Children can see their balance but cannot request withdrawals.
 - Children can view their total balance across all accounts, as well as individual account balances.
 - Parents and children can filter transactions by account type.
+- Parents can back-date transactions and account creation dates when adding new entries (useful for recording past activity or setting up accounts retroactively).
 - Ability to accept offers on Certificates of Deposit (CDs) given by parents (pays into checking account).
 - Daily **compound interest** on savings and college savings accounts, with optional **bonus tiers** or promotions (Parents can change interest rates at any time)
 - Full ledger of transactions: amount, memo, date, creator, type, account type, promo ID (optional)
