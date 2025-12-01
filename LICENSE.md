@@ -1,7 +1,10 @@
-# Uncle Jon’s Bank License
+# Uncle Jon's Bank License
 
-**Uncle Jon’s Bank** – A Web-Based Financial Education Platform for Kids  
-Copyright (C) 2025  Jonathan Westfall
+**Uncle Jon's Bank** – A Web-Based Financial Education Platform for Kids  
+Copyright (C) 2025  Jonathan Westfall  
+Copyright (C) 2025  Jared Chung (modifications and additions)
+
+This project is based on the original Uncle Jon's Bank by Jonathan Westfall. All original code and design copyright © Jonathan Westfall. All modifications and additions copyright © Jared Chung.
 
 This program is free software: you can redistribute it and/or modify  
 it under the terms of the **GNU Affero General Public License** as published  

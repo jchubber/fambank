@@ -305,4 +305,4 @@ Uncle Jon’s Bank is more than a toy. It’s a tool to **build good money habit
 
 ## 🧑‍💻 Author
 
-Built and maintained by **Jon Westfall** ([@jonwestfall](https://github.com/jonwestfall)) and future contributors.
+This project is based on **Uncle Jon's Bank** by **Jon Westfall** ([@jonwestfall](https://github.com/jonwestfall)). Original code and design copyright © Jon Westfall. Modifications and additions copyright © Jared Chung.
