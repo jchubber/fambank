@@ -7,8 +7,6 @@ from app.schemas import (
     ChildCreate,
     ChildRead,
     ChildLogin,
-    InterestRateUpdate,
-    PenaltyRateUpdate,
     CDPenaltyRateUpdate,
     AccessCodeUpdate,
     ShareCodeCreate,
@@ -17,7 +15,7 @@ from app.schemas import (
     AccountRead,
     ChildAccountsResponse,
 )
-from app.models import Child, User
+from app.models import Child, User, Account
 from app.database import get_session
 from app.crud import (
     create_child_for_user,
@@ -25,8 +23,6 @@ from app.crud import (
     get_child_by_id,
     get_child_by_access_code,
     set_child_frozen,
-    set_interest_rate,
-    set_penalty_interest_rate,
     set_cd_penalty_rate,
     get_account_by_child,
     get_checking_account_by_child,
@@ -44,6 +40,9 @@ from app.crud import (
     calculate_balance,
     calculate_total_balance,
     calculate_available_balance,
+    recalc_interest,
+    get_account,
+    get_current_rate_for_account_type,
 )
 from app.auth import (
     get_current_user,
@@ -81,6 +80,40 @@ async def _ensure_link(
     return link
 
 
+async def _build_child_read_with_rates(
+    db: AsyncSession, child: Child, account: Account | None
+) -> ChildRead:
+    """Build a ChildRead response with rates computed from global source."""
+    if not account:
+        # Get checking account as default
+        account = await get_checking_account_by_child(db, child.id)
+    
+    if account:
+        # Get current rates from global history (for checking account)
+        interest_rate, penalty_interest_rate = await get_current_rate_for_account_type(
+            db, account.account_type
+        )
+        return ChildRead(
+            id=child.id,
+            first_name=child.first_name,
+            account_frozen=child.account_frozen,
+            interest_rate=interest_rate,
+            penalty_interest_rate=penalty_interest_rate,
+            cd_penalty_rate=account.cd_penalty_rate,
+            total_interest_earned=account.total_interest_earned,
+        )
+    else:
+        return ChildRead(
+            id=child.id,
+            first_name=child.first_name,
+            account_frozen=child.account_frozen,
+            interest_rate=None,
+            penalty_interest_rate=None,
+            cd_penalty_rate=None,
+            total_interest_earned=None,
+        )
+
+
 @router.get("/me", response_model=ChildRead)
 async def read_current_child(
     identity: tuple[str, Child | User] = Depends(get_current_identity),
@@ -92,15 +125,7 @@ async def read_current_child(
     else:
         raise HTTPException(status_code=403, detail="Not a child token")
     account = await get_account_by_child(db, child.id)
-    return ChildRead(
-        id=child.id,
-        first_name=child.first_name,
-        account_frozen=child.account_frozen,
-        interest_rate=account.interest_rate if account else None,
-        penalty_interest_rate=account.penalty_interest_rate if account else None,
-        cd_penalty_rate=account.cd_penalty_rate if account else None,
-        total_interest_earned=account.total_interest_earned if account else None,
-    )
+    return await _build_child_read_with_rates(db, child, account)
 
 
 @router.post("/{child_id}/sharecode", response_model=ShareCodeRead)
@@ -136,15 +161,7 @@ async def redeem_share_code(
     await mark_share_code_used(db, share, current_user.id)
     child = await get_child_by_id(db, share.child_id)
     account = await get_account_by_child(db, share.child_id)
-    return ChildRead(
-        id=child.id,
-        first_name=child.first_name,
-        account_frozen=child.account_frozen,
-        interest_rate=account.interest_rate if account else None,
-        penalty_interest_rate=account.penalty_interest_rate if account else None,
-        cd_penalty_rate=account.cd_penalty_rate if account else None,
-        total_interest_earned=account.total_interest_earned if account else None,
-    )
+    return await _build_child_read_with_rates(db, child, account)
 
 
 @router.get("/me/parents", response_model=list[ParentAccess])
@@ -232,15 +249,7 @@ async def update_access_code(
     child.access_code = data.access_code
     updated = await save_child(db, child)
     account = await get_account_by_child(db, updated.id)
-    return ChildRead(
-        id=updated.id,
-        first_name=updated.first_name,
-        account_frozen=updated.account_frozen,
-        interest_rate=account.interest_rate if account else None,
-        penalty_interest_rate=account.penalty_interest_rate if account else None,
-        cd_penalty_rate=account.cd_penalty_rate if account else None,
-        total_interest_earned=account.total_interest_earned if account else None,
-    )
+    return await _build_child_read_with_rates(db, updated, account)
 
 
 @router.post("/", response_model=ChildRead)
@@ -289,15 +298,7 @@ async def create_child_route(
     
     new_child = await create_child_for_user(db, child_model, current_user.id)
     account = await get_account_by_child(db, new_child.id)
-    return ChildRead(
-        id=new_child.id,
-        first_name=new_child.first_name,
-        account_frozen=new_child.account_frozen,
-        interest_rate=account.interest_rate if account else None,
-        penalty_interest_rate=account.penalty_interest_rate if account else None,
-        cd_penalty_rate=account.cd_penalty_rate if account else None,
-        total_interest_earned=account.total_interest_earned if account else None,
-    )
+    return await _build_child_read_with_rates(db, new_child, account)
 
 
 @router.get("/", response_model=list[ChildRead])
@@ -310,19 +311,7 @@ async def list_children(
     result = []
     for c in children:
         account = await get_account_by_child(db, c.id)
-        result.append(
-            ChildRead(
-                id=c.id,
-                first_name=c.first_name,
-                account_frozen=c.account_frozen,
-                interest_rate=account.interest_rate if account else None,
-                penalty_interest_rate=account.penalty_interest_rate if account else None,
-                cd_penalty_rate=account.cd_penalty_rate if account else None,
-                total_interest_earned=(
-                    account.total_interest_earned if account else None
-                ),
-            )
-        )
+        result.append(await _build_child_read_with_rates(db, c, account))
     return result
 
 
@@ -366,13 +355,18 @@ async def get_child_accounts(
     college_balance = await calculate_balance(db, college_savings.id)
     total = await calculate_total_balance(db, child_id)
     
+    # Get current rates from global history
+    checking_interest, _ = await get_current_rate_for_account_type(db, "checking")
+    savings_interest, _ = await get_current_rate_for_account_type(db, "savings")
+    college_interest, _ = await get_current_rate_for_account_type(db, "college_savings")
+    
     return ChildAccountsResponse(
         checking=AccountRead(
             id=checking.id,
             account_type=checking.account_type,
             balance=checking_balance,
             available_balance=None,
-            interest_rate=checking.interest_rate,
+            interest_rate=checking_interest,
             lockup_period_days=None,
         ),
         savings=AccountRead(
@@ -380,7 +374,7 @@ async def get_child_accounts(
             account_type=savings.account_type,
             balance=savings_balance,
             available_balance=savings_available,
-            interest_rate=savings.interest_rate,
+            interest_rate=savings_interest,
             lockup_period_days=savings.lockup_period_days,
         ),
         college_savings=AccountRead(
@@ -388,7 +382,7 @@ async def get_child_accounts(
             account_type=college_savings.account_type,
             balance=college_balance,
             available_balance=None,
-            interest_rate=college_savings.interest_rate,
+            interest_rate=college_interest,
             lockup_period_days=None,
         ),
         total_balance=total,
@@ -419,15 +413,7 @@ async def get_child_route(
         if not child:
             raise HTTPException(status_code=404, detail="Child not found")
     account = await get_account_by_child(db, child_id)
-    return ChildRead(
-        id=child.id,
-        first_name=child.first_name,
-        account_frozen=child.account_frozen,
-        interest_rate=account.interest_rate if account else None,
-        penalty_interest_rate=account.penalty_interest_rate if account else None,
-        cd_penalty_rate=account.cd_penalty_rate if account else None,
-        total_interest_earned=account.total_interest_earned if account else None,
-    )
+    return await _build_child_read_with_rates(db, child, account)
 
 
 @router.post("/{child_id}/freeze", response_model=ChildRead)
@@ -443,15 +429,7 @@ async def freeze_child(
         await _ensure_link(db, current_user.id, child_id, PERM_FREEZE_CHILD)
     updated = await set_child_frozen(db, child_id, True)
     account = await get_account_by_child(db, child_id)
-    return ChildRead(
-        id=updated.id,
-        first_name=updated.first_name,
-        account_frozen=updated.account_frozen,
-        interest_rate=account.interest_rate if account else None,
-        penalty_interest_rate=account.penalty_interest_rate if account else None,
-        cd_penalty_rate=account.cd_penalty_rate if account else None,
-        total_interest_earned=account.total_interest_earned if account else None,
-    )
+    return await _build_child_read_with_rates(db, updated, account)
 
 
 @router.post("/{child_id}/unfreeze", response_model=ChildRead)
@@ -469,77 +447,7 @@ async def unfreeze_child(
             raise HTTPException(status_code=404, detail="Child not found")
     updated = await set_child_frozen(db, child_id, False)
     account = await get_account_by_child(db, child_id)
-    return ChildRead(
-        id=updated.id,
-        first_name=updated.first_name,
-        account_frozen=updated.account_frozen,
-        interest_rate=account.interest_rate if account else None,
-        penalty_interest_rate=account.penalty_interest_rate if account else None,
-        cd_penalty_rate=account.cd_penalty_rate if account else None,
-        total_interest_earned=account.total_interest_earned if account else None,
-    )
-
-
-@router.put("/{child_id}/interest-rate", response_model=ChildRead)
-async def update_interest_rate(
-    child_id: int,
-    data: InterestRateUpdate,
-    db: AsyncSession = Depends(get_session),
-    current_user: User = Depends(require_permissions(PERM_MANAGE_CHILD_SETTINGS)),
-):
-    child = await get_child_by_id(db, child_id)
-    if not child:
-        raise HTTPException(status_code=404, detail="Child not found")
-    if current_user.role != "admin":
-        await _ensure_link(db, current_user.id, child_id, PERM_MANAGE_CHILD_SETTINGS)
-    await post_transaction_update(db, child_id)
-    try:
-        account = await set_interest_rate(db, child_id, data.interest_rate, data.account_type)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Account not found")
-    # Return checking account for backward compatibility
-    checking_account = await get_checking_account_by_child(db, child_id)
-    return ChildRead(
-        id=child.id,
-        first_name=child.first_name,
-        account_frozen=child.account_frozen,
-        interest_rate=checking_account.interest_rate if checking_account else None,
-        penalty_interest_rate=checking_account.penalty_interest_rate if checking_account else None,
-        cd_penalty_rate=checking_account.cd_penalty_rate if checking_account else None,
-        total_interest_earned=checking_account.total_interest_earned if checking_account else None,
-    )
-
-
-@router.put("/{child_id}/penalty-interest-rate", response_model=ChildRead)
-async def update_penalty_interest_rate(
-    child_id: int,
-    data: PenaltyRateUpdate,
-    db: AsyncSession = Depends(get_session),
-    current_user: User = Depends(require_permissions(PERM_MANAGE_CHILD_SETTINGS)),
-):
-    child = await get_child_by_id(db, child_id)
-    if not child:
-        raise HTTPException(status_code=404, detail="Child not found")
-    if current_user.role != "admin":
-        await _ensure_link(db, current_user.id, child_id, PERM_MANAGE_CHILD_SETTINGS)
-    await post_transaction_update(db, child_id)
-    try:
-        account = await set_penalty_interest_rate(
-            db, child_id, data.penalty_interest_rate, data.account_type
-        )
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Account not found")
-    # Return checking account for backward compatibility
-    checking_account = await get_checking_account_by_child(db, child_id)
-    return ChildRead(
-        id=child.id,
-        first_name=child.first_name,
-        account_frozen=child.account_frozen,
-        interest_rate=checking_account.interest_rate if checking_account else None,
-        penalty_interest_rate=checking_account.penalty_interest_rate if checking_account else None,
-        cd_penalty_rate=checking_account.cd_penalty_rate if checking_account else None,
-        total_interest_earned=checking_account.total_interest_earned if checking_account else None,
-    )
+    return await _build_child_read_with_rates(db, updated, account)
 
 
 @router.put("/{child_id}/cd-penalty-rate", response_model=ChildRead)
@@ -558,15 +466,50 @@ async def update_cd_penalty_rate(
         account = await set_cd_penalty_rate(db, child_id, data.cd_penalty_rate)
     except ValueError:
         raise HTTPException(status_code=404, detail="Account not found")
-    return ChildRead(
-        id=child.id,
-        first_name=child.first_name,
-        account_frozen=child.account_frozen,
-        interest_rate=account.interest_rate if account else None,
-        penalty_interest_rate=account.penalty_interest_rate if account else None,
-        cd_penalty_rate=account.cd_penalty_rate if account else None,
-        total_interest_earned=account.total_interest_earned if account else None,
-    )
+    return await _build_child_read_with_rates(db, child, account)
+
+
+@router.post("/{child_id}/accounts/{account_id}/recalc-interest")
+async def recalc_account_interest(
+    child_id: int,
+    account_id: int,
+    db: AsyncSession = Depends(get_session),
+    identity: tuple[str, Child | User] = Depends(get_current_identity),
+):
+    """Recalculate interest for a specific account."""
+    # Verify child exists
+    child = await get_child_by_id(db, child_id)
+    if not child:
+        raise HTTPException(status_code=404, detail="Child not found")
+    
+    # Verify account exists and belongs to child
+    account = await get_account(db, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    if account.child_id != child_id:
+        raise HTTPException(status_code=403, detail="Account does not belong to this child")
+    
+    # Verify user has access to this child
+    kind, obj = identity
+    if kind == "child":
+        # Child can only access their own account
+        if obj.id != child_id:
+            raise HTTPException(status_code=403, detail="Not authorized")
+    else:
+        # Parent must have link to child
+        await _ensure_link(db, obj.id, child_id, PERM_VIEW_TRANSACTIONS)
+    
+    # Only recalculate interest for savings and college_savings accounts
+    if account.account_type not in ("savings", "college_savings"):
+        raise HTTPException(
+            status_code=400, 
+            detail="Interest recalculation only applies to savings and college_savings accounts"
+        )
+    
+    # Recalculate interest
+    await recalc_interest(db, account_id)
+    
+    return {"message": "Interest recalculated successfully", "account_id": account_id}
 
 
 @router.post("/login")

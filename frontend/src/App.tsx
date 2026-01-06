@@ -192,7 +192,7 @@ function App() {
           <>
             <Route
               path="/"
-              element={<ParentDashboard token={token} apiUrl={apiUrl} permissions={permissions} onLogout={handleLogout} currencySymbol={currencySymbol} />}
+              element={<ParentDashboard token={token} apiUrl={apiUrl} permissions={permissions} onLogout={handleLogout} currencySymbol={currencySymbol} isAdmin={isAdmin} />}
             />
             <Route
               path="/parent/chores"

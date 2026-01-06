@@ -93,6 +93,7 @@ export default function ChildDashboard({ token, childId, apiUrl, onLogout, curre
   const [tableWidth, setTableWidth] = useState<number>()
   const { showToast } = useToast()
   const [loadingLedger, setLoadingLedger] = useState(false)
+  const [recalculatingInterest, setRecalculatingInterest] = useState(false)
 
   const fetchAccounts = useCallback(async () => {
     try {
@@ -238,6 +239,47 @@ export default function ChildDashboard({ token, childId, apiUrl, onLogout, curre
               </p>
             </div>
           </div>
+          
+          {ledger && accounts && selectedAccountId && (
+            <>
+              {(selectedAccountId === accounts.savings.id || selectedAccountId === accounts.college_savings.id) && (
+                <div style={{ marginBottom: '1rem' }}>
+                  <button
+                    onClick={async () => {
+                      setRecalculatingInterest(true)
+                      try {
+                        const resp = await fetch(
+                          `${apiUrl}/children/${childId}/accounts/${selectedAccountId}/recalc-interest`,
+                          {
+                            method: 'POST',
+                            headers: { Authorization: `Bearer ${token}` },
+                          }
+                        )
+                        if (resp.ok) {
+                          showToast('Interest recalculated successfully')
+                          await fetchAccounts()
+                          if (selectedAccountId) {
+                            await fetchLedger(selectedAccountId)
+                          }
+                        } else {
+                          const data = await resp.json().catch(() => null)
+                          showToast(data?.detail || 'Failed to recalculate interest', 'error')
+                        }
+                      } catch (error) {
+                        showToast('Failed to recalculate interest', 'error')
+                      } finally {
+                        setRecalculatingInterest(false)
+                      }
+                    }}
+                    disabled={recalculatingInterest}
+                    style={{ marginBottom: '1rem' }}
+                  >
+                    {recalculatingInterest ? 'Recalculating...' : 'Recalculate Interest for This Account'}
+                  </button>
+                </div>
+              )}
+            </>
+          )}
           
           {ledger && accounts && (
             <>

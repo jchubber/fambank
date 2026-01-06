@@ -13,6 +13,18 @@ interface ChildProfileData {
   cd_penalty_rate: number
 }
 
+interface TreasuryYield {
+  id: number
+  yield_date: string
+  yield_value: number
+  created_at: string
+}
+
+interface Multipliers {
+  savings_multiplier: number
+  college_savings_multiplier: number
+}
+
 interface WithdrawalRequest {
   id: number
   child_id: number
@@ -32,6 +44,8 @@ export default function ChildProfile({ token, apiUrl, currencySymbol }: Props) {
   const [data, setData] = useState<ChildProfileData | null>(null)
   const [withdrawals, setWithdrawals] = useState<WithdrawalRequest[]>([])
   const [badges, setBadges] = useState<Badge[]>([])
+  const [treasuryYield, setTreasuryYield] = useState<TreasuryYield | null>(null)
+  const [multipliers, setMultipliers] = useState<Multipliers | null>(null)
 
   useEffect(() => {
     const fetchData = async () => {
@@ -46,9 +60,22 @@ export default function ChildProfile({ token, apiUrl, currencySymbol }: Props) {
       const resp = await fetch(`${apiUrl}/education/badges/me`, { headers: { Authorization: `Bearer ${token}` } })
       if (resp.ok) setBadges(await resp.json())
     }
+    const fetchTreasuryYield = async () => {
+      const resp = await fetch(`${apiUrl}/settings/treasury-yields?limit=1`)
+      if (resp.ok) {
+        const yields = await resp.json() as TreasuryYield[]
+        if (yields.length > 0) setTreasuryYield(yields[0])
+      }
+    }
+    const fetchMultipliers = async () => {
+      const resp = await fetch(`${apiUrl}/settings/multipliers`)
+      if (resp.ok) setMultipliers(await resp.json() as Multipliers)
+    }
     fetchData()
     fetchWithdrawals()
     fetchBadges()
+    fetchTreasuryYield()
+    fetchMultipliers()
   }, [token, apiUrl])
 
   if (!data) return <p>Loading...</p>
@@ -56,8 +83,23 @@ export default function ChildProfile({ token, apiUrl, currencySymbol }: Props) {
   return (
     <div className="container">
       <h2>Your Profile</h2>
+      {treasuryYield && (
+        <div style={{ padding: '0.75rem', backgroundColor: '#f0f8ff', borderRadius: '4px', marginBottom: '1rem', border: '1px solid #b0d4f1' }}>
+          <p style={{ margin: 0, fontWeight: 'bold' }}>
+            Current Treasury Rate: {treasuryYield.yield_value.toFixed(2)}%
+          </p>
+          <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.9em', color: '#666' }}>
+            This is the base rate that your savings interest is calculated from (as of {new Date(treasuryYield.yield_date).toLocaleDateString()})
+          </p>
+        </div>
+      )}
       <p>
-        Interest rate: {(data.interest_rate * 100).toFixed(2)}% - This is how much extra money you earn for saving.
+        <strong>Interest rate: {(data.interest_rate * 100).toFixed(2)}%</strong> - This is how much extra money you earn for saving.
+        {treasuryYield && multipliers && (
+          <span style={{ fontSize: '0.9em', color: '#666', display: 'block', marginTop: '0.25rem' }}>
+            (Calculated from Treasury Rate {treasuryYield.yield_value.toFixed(2)}% × Multiplier {multipliers.savings_multiplier.toFixed(2)}x)
+          </span>
+        )}
       </p>
       <p>
         Penalty rate: {(data.penalty_interest_rate * 100).toFixed(2)}% - If your balance goes below zero, you owe this extra.

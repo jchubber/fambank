@@ -34,10 +34,25 @@ from app.models import (
     Badge,
     ChildBadge,
     InterestRateHistory,
+    TreasuryYield,
+    MultiplierHistory,
 )
 from app.auth import get_password_hash, get_child_by_id
 from app.acl import get_default_permissions_for_role, ALL_PERMISSIONS
 import uuid
+import os
+import logging
+import httpx
+
+logger = logging.getLogger(__name__)
+
+# FRED API configuration
+FRED_API_KEY = os.getenv("FRED_API_KEY")
+FRED_API_BASE_URL = "https://api.stlouisfed.org/fred"
+FRED_SERIES_ID = "DGS1"  # 1-Year Treasury Constant Maturity Rate
+
+if not FRED_API_KEY:
+    logger.warning("FRED_API_KEY environment variable not set. Treasury yield fetching will be disabled. Get a free API key at https://fred.stlouisfed.org/docs/api/api_key.html")
 
 
 async def ensure_permissions_exist(db: AsyncSession, names: list[str]) -> None:
@@ -200,33 +215,27 @@ async def create_child_for_user(db: AsyncSession, child: Child, user_id: int):
     db.add(child)
     await db.flush()  # ensure child.id is populated
 
-    # Create checking account (no interest, default rates for fees)
+    # Create checking account (rates are now global, retrieved from Settings/history)
     checking_account = Account(
         child_id=child.id,
         account_type="checking",
-        interest_rate=0.0,  # Checking accounts don't earn interest
-        penalty_interest_rate=settings.default_penalty_interest_rate,
         cd_penalty_rate=settings.default_cd_penalty_rate,
     )
     db.add(checking_account)
 
-    # Create savings account (with interest and lockup period)
+    # Create savings account (with lockup period, rates are now global)
     savings_account = Account(
         child_id=child.id,
         account_type="savings",
-        interest_rate=settings.savings_account_interest_rate,
-        penalty_interest_rate=settings.default_penalty_interest_rate,
         cd_penalty_rate=settings.default_cd_penalty_rate,
         lockup_period_days=settings.savings_account_lockup_period_days,
     )
     db.add(savings_account)
 
-    # Create college savings account (with separate interest rate)
+    # Create college savings account (rates are now global)
     college_savings_account = Account(
         child_id=child.id,
         account_type="college_savings",
-        interest_rate=settings.college_savings_account_interest_rate,
-        penalty_interest_rate=settings.default_penalty_interest_rate,
         cd_penalty_rate=settings.default_cd_penalty_rate,
     )
     db.add(college_savings_account)
@@ -443,157 +452,252 @@ async def get_all_accounts(db: AsyncSession) -> list[Account]:
 
 
 async def get_interest_rate_for_date(
-    db: AsyncSession, account_id: int, target_date: date
+    db: AsyncSession, account_type: str, target_date: date
 ) -> tuple[float, float]:
-    """Get the interest rate and penalty interest rate that were effective on a given date.
+    """Get the interest rate and penalty interest rate that were effective on a given date for an account type.
+    
+    For savings and college_savings accounts, calculates interest rate as: Treasury Yield × Multiplier.
+    Penalty rates remain manual (from InterestRateHistory or Settings).
     
     Returns (interest_rate, penalty_interest_rate) tuple.
-    If no history exists, returns current account rates (backward compatibility).
     """
-    result = await db.execute(
+    # Get penalty rate from history or Settings (penalty rates remain manual)
+    penalty_result = await db.execute(
         select(InterestRateHistory)
         .where(
-            InterestRateHistory.account_id == account_id,
+            InterestRateHistory.account_type == account_type,
             InterestRateHistory.date <= target_date,
         )
         .order_by(InterestRateHistory.date.desc(), InterestRateHistory.created_at.desc())
         .limit(1)
     )
-    history = result.scalar_one_or_none()
-    if history:
-        return (history.interest_rate, history.penalty_interest_rate)
+    penalty_history = penalty_result.scalar_one_or_none()
     
-    # Backward compatibility: return current account rates if no history
-    account = await db.get(Account, account_id)
-    if account:
-        return (account.interest_rate, account.penalty_interest_rate)
-    return (0.01, 0.02)  # Default fallback
+    settings = await get_settings(db)
+    
+    # Get penalty rate
+    if penalty_history:
+        penalty_rate = penalty_history.penalty_interest_rate
+    else:
+        if account_type == "savings":
+            penalty_rate = settings.savings_penalty_interest_rate
+        elif account_type == "college_savings":
+            penalty_rate = settings.college_savings_penalty_interest_rate
+        elif account_type == "checking":
+            penalty_rate = settings.checking_penalty_interest_rate
+        else:
+            penalty_rate = 0.02  # Default fallback
+    
+    # Calculate interest rate based on account type
+    if account_type in ("savings", "college_savings"):
+        # Calculate as Treasury Yield × Multiplier
+        try:
+            treasury_yield = await get_treasury_yield_for_date(db, target_date)
+            multiplier = await get_multiplier_for_date(db, account_type, target_date)
+            interest_rate = treasury_yield * multiplier
+            
+            # Cache the calculated rate in InterestRateHistory for performance
+            # Check if we already have a cached entry for this date
+            cached_result = await db.execute(
+                select(InterestRateHistory)
+                .where(
+                    InterestRateHistory.account_type == account_type,
+                    InterestRateHistory.date == target_date,
+                )
+                .limit(1)
+            )
+            cached_entry = cached_result.scalar_one_or_none()
+            
+            if cached_entry:
+                # Update existing cached entry
+                if abs(cached_entry.interest_rate - interest_rate) > 0.0001:  # Only update if significantly different
+                    cached_entry.interest_rate = interest_rate
+                    cached_entry.penalty_interest_rate = penalty_rate
+                    db.add(cached_entry)
+                    await db.commit()
+            else:
+                # Create new cached entry
+                cached_entry = InterestRateHistory(
+                    account_type=account_type,
+                    date=target_date,
+                    interest_rate=interest_rate,
+                    penalty_interest_rate=penalty_rate,
+                )
+                db.add(cached_entry)
+                await db.commit()
+            
+            return (interest_rate, penalty_rate)
+        except Exception as e:
+            logger.warning(f"Error calculating Treasury-based rate for {account_type} on {target_date}: {e}, falling back to Settings")
+            # Fallback to Settings defaults
+            if account_type == "savings":
+                return (settings.savings_account_interest_rate, penalty_rate)
+            elif account_type == "college_savings":
+                return (settings.college_savings_account_interest_rate, penalty_rate)
+    elif account_type == "checking":
+        return (0.0, penalty_rate)
+    
+    # Default fallback
+    return (0.01, penalty_rate)
 
 
-async def set_interest_rate(
-    db: AsyncSession, child_id: int, rate: float, account_type: str = "checking"
-) -> Account:
-    """Update the interest rate for a specific account type."""
-    account = await get_account_by_child_and_type(db, child_id, account_type)
-    if not account:
-        raise ValueError("Account not found")
+async def get_current_rate_for_account_type(
+    db: AsyncSession, account_type: str
+) -> tuple[float, float]:
+    """Get the current interest rate and penalty rate for an account type.
+    
+    Returns (interest_rate, penalty_interest_rate) tuple from history or Settings defaults.
+    """
+    today = date.today()
+    return await get_interest_rate_for_date(db, account_type, today)
+
+
+async def set_global_interest_rate(
+    db: AsyncSession, account_type: str, rate: float
+) -> None:
+    """Update the global interest rate for an account type (savings or college_savings only)."""
+    if account_type not in ("savings", "college_savings"):
+        raise ValueError("Interest rates only apply to savings and college_savings accounts")
+    
+    today = date.today()
+    
+    # Get current rate to check if it changed
+    current_rate, current_penalty = await get_current_rate_for_account_type(db, account_type)
     
     # Only create history entry if rate actually changed
-    if account.interest_rate != rate:
-        today = date.today()
-        old_rate = account.interest_rate
-        
+    if current_rate != rate:
         # Check if we already have an entry for today
         existing_result = await db.execute(
             select(InterestRateHistory)
             .where(
-                InterestRateHistory.account_id == account.id,
+                InterestRateHistory.account_type == account_type,
                 InterestRateHistory.date == today,
             )
             .order_by(InterestRateHistory.created_at.desc())
             .limit(1)
         )
         existing_entry = existing_result.scalar_one_or_none()
+        
         if existing_entry:
-            # Update existing entry if rate changed
+            # Update existing entry
             existing_entry.interest_rate = rate
         else:
-            # Check if this is the first history entry
+            # Check if this is the first history entry for this account type
             first_history_result = await db.execute(
                 select(InterestRateHistory)
-                .where(InterestRateHistory.account_id == account.id)
+                .where(InterestRateHistory.account_type == account_type)
                 .order_by(InterestRateHistory.date)
                 .limit(1)
             )
             first_history = first_history_result.scalar_one_or_none()
             
             if not first_history:
-                # This is the first history entry - create entry for OLD rate backdated appropriately
-                # Try to backdate to first transaction date, otherwise use account creation date
-                first_tx_result = await db.execute(
-                    select(func.min(Transaction.timestamp))
-                    .where(Transaction.account_id == account.id)
-                )
-                first_tx_time = first_tx_result.scalar_one_or_none()
-                
-                if first_tx_time:
-                    history_date = first_tx_time.date()
-                    # Ensure it's in the past (not today or future)
-                    if history_date >= today:
-                        history_date = today - timedelta(days=1)
-                else:
-                    child = await get_child(db, account.child_id)
-                    if child:
-                        history_date = child.created_at.date()
-                        # Ensure it's in the past (not today or future)
-                        if history_date >= today:
-                            history_date = today - timedelta(days=1)
-                    else:
-                        history_date = today - timedelta(days=1)  # Use yesterday to ensure it's before today
+                # This is the first history entry - create entry for OLD rate backdated
+                history_date = today - timedelta(days=1)
                 
                 # Create history entry for the OLD rate (backdated)
                 old_history = InterestRateHistory(
-                    account_id=account.id,
+                    account_type=account_type,
                     date=history_date,
-                    interest_rate=old_rate,
-                    penalty_interest_rate=account.penalty_interest_rate,
+                    interest_rate=current_rate,
+                    penalty_interest_rate=current_penalty,
                 )
                 db.add(old_history)
             
             # Create new history entry for the NEW rate (today)
             new_history = InterestRateHistory(
-                account_id=account.id,
+                account_type=account_type,
                 date=today,
                 interest_rate=rate,
-                penalty_interest_rate=account.penalty_interest_rate,
+                penalty_interest_rate=current_penalty,
             )
             db.add(new_history)
+        
+        await db.commit()
     
-    account.interest_rate = rate
-    db.add(account)
+    # Update Settings for backward compatibility
+    settings = await get_settings(db)
+    if account_type == "savings":
+        settings.savings_account_interest_rate = rate
+    elif account_type == "college_savings":
+        settings.college_savings_account_interest_rate = rate
+    db.add(settings)
     await db.commit()
-    await db.refresh(account)
-    return account
 
 
-async def set_penalty_interest_rate(
-    db: AsyncSession, child_id: int, rate: float, account_type: str = "checking"
-) -> Account:
-    """Update the penalty interest rate for a specific account type."""
-    account = await get_account_by_child_and_type(db, child_id, account_type)
-    if not account:
-        raise ValueError("Account not found")
+async def set_global_penalty_rate(
+    db: AsyncSession, account_type: str, rate: float
+) -> None:
+    """Update the global penalty interest rate for an account type."""
+    if account_type not in ("checking", "savings", "college_savings"):
+        raise ValueError("Invalid account type")
+    
+    today = date.today()
+    
+    # Get current rates to check if penalty rate changed
+    current_interest, current_penalty = await get_current_rate_for_account_type(db, account_type)
     
     # Only create history entry if rate actually changed
-    if account.penalty_interest_rate != rate:
-        today = date.today()
-        # Check if we already have an entry for today with this rate
-        existing = await db.execute(
+    if current_penalty != rate:
+        # Check if we already have an entry for today
+        existing_result = await db.execute(
             select(InterestRateHistory)
             .where(
-                InterestRateHistory.account_id == account.id,
+                InterestRateHistory.account_type == account_type,
                 InterestRateHistory.date == today,
             )
+            .order_by(InterestRateHistory.created_at.desc())
+            .limit(1)
         )
-        existing_entry = existing.scalar_one_or_none()
+        existing_entry = existing_result.scalar_one_or_none()
+        
         if existing_entry:
             # Update existing entry
             existing_entry.penalty_interest_rate = rate
         else:
-            # Create new history entry
-            history = InterestRateHistory(
-                account_id=account.id,
+            # Check if this is the first history entry for this account type
+            first_history_result = await db.execute(
+                select(InterestRateHistory)
+                .where(InterestRateHistory.account_type == account_type)
+                .order_by(InterestRateHistory.date)
+                .limit(1)
+            )
+            first_history = first_history_result.scalar_one_or_none()
+            
+            if not first_history:
+                # This is the first history entry - create entry for OLD rate backdated
+                history_date = today - timedelta(days=1)
+                
+                # Create history entry for the OLD rates (backdated)
+                old_history = InterestRateHistory(
+                    account_type=account_type,
+                    date=history_date,
+                    interest_rate=current_interest,
+                    penalty_interest_rate=current_penalty,
+                )
+                db.add(old_history)
+            
+            # Create new history entry with updated penalty rate (today)
+            new_history = InterestRateHistory(
+                account_type=account_type,
                 date=today,
-                interest_rate=account.interest_rate,
+                interest_rate=current_interest,
                 penalty_interest_rate=rate,
             )
-            db.add(history)
+            db.add(new_history)
+        
+        await db.commit()
     
-    account.penalty_interest_rate = rate
-    db.add(account)
+    # Update Settings
+    settings = await get_settings(db)
+    if account_type == "checking":
+        settings.checking_penalty_interest_rate = rate
+    elif account_type == "savings":
+        settings.savings_penalty_interest_rate = rate
+    elif account_type == "college_savings":
+        settings.college_savings_penalty_interest_rate = rate
+    db.add(settings)
     await db.commit()
-    await db.refresh(account)
-    return account
 
 
 async def set_cd_penalty_rate(
@@ -608,6 +712,328 @@ async def set_cd_penalty_rate(
     await db.commit()
     await db.refresh(account)
     return account
+
+
+async def fetch_treasury_yield(
+    db: AsyncSession, target_date: date | None = None
+) -> TreasuryYield | None:
+    """Fetch Treasury yield for a specific date from FRED API.
+    
+    If target_date is None, fetches the latest available yield.
+    Returns None if API call fails or data is unavailable.
+    """
+    if not FRED_API_KEY:
+        logger.warning("FRED_API_KEY not set, cannot fetch Treasury yield")
+        return None
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            if target_date is None:
+                # Fetch latest available observation
+                url = f"{FRED_API_BASE_URL}/series/observations"
+                params = {
+                    "series_id": FRED_SERIES_ID,
+                    "api_key": FRED_API_KEY,
+                    "file_type": "json",
+                    "sort_order": "desc",
+                    "limit": 1,
+                }
+            else:
+                # Fetch observation for specific date
+                url = f"{FRED_API_BASE_URL}/series/observations"
+                params = {
+                    "series_id": FRED_SERIES_ID,
+                    "api_key": FRED_API_KEY,
+                    "file_type": "json",
+                    "observation_start": target_date.isoformat(),
+                    "observation_end": target_date.isoformat(),
+                    "limit": 1,
+                }
+            
+            response = await client.get(url, params=params, timeout=10.0)
+            response.raise_for_status()
+            data = response.json()
+            
+            observations = data.get("observations", [])
+            if not observations:
+                logger.warning(f"No Treasury yield data found for date {target_date}")
+                return None
+            
+            # Get the first (most recent) observation
+            obs = observations[0]
+            yield_str = obs.get("value", ".")
+            obs_date_str = obs.get("date")
+            
+            # Validate date is present
+            if not obs_date_str:
+                logger.error(f"Treasury yield observation missing date field: {obs}")
+                return None
+            
+            # Handle missing data (FRED returns "." for missing dates)
+            if yield_str == "." or yield_str is None:
+                logger.warning(f"Treasury yield data missing for date {obs_date_str}")
+                return None
+            
+            try:
+                yield_value = float(yield_str)
+                obs_date = date.fromisoformat(obs_date_str)
+            except (ValueError, TypeError) as e:
+                logger.error(f"Error parsing Treasury yield data: yield_str={yield_str}, date_str={obs_date_str}, error={e}")
+                return None
+            
+            # Check if we already have this yield in the database
+            existing = await db.execute(
+                select(TreasuryYield).where(TreasuryYield.yield_date == obs_date)
+            )
+            existing_yield = existing.scalar_one_or_none()
+            
+            if existing_yield:
+                # Update existing entry
+                existing_yield.yield_value = yield_value
+                db.add(existing_yield)
+                await db.commit()
+                await db.refresh(existing_yield)
+                return existing_yield
+            else:
+                # Validate obs_date is not None before creating
+                if obs_date is None:
+                    logger.error(f"obs_date is None after parsing. obs_date_str={obs_date_str}, obs={obs}")
+                    return None
+                
+                # Create new entry
+                treasury_yield = TreasuryYield(
+                    yield_date=obs_date,
+                    yield_value=yield_value,
+                )
+                db.add(treasury_yield)
+                await db.commit()
+                await db.refresh(treasury_yield)
+                return treasury_yield
+                
+    except httpx.HTTPError as e:
+        logger.error(f"HTTP error fetching Treasury yield: {e}")
+        await db.rollback()
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error fetching Treasury yield: {e}", exc_info=True)
+        await db.rollback()
+        return None
+
+
+async def get_treasury_yield_for_date(
+    db: AsyncSession, target_date: date
+) -> float:
+    """Get Treasury yield for a specific date.
+    
+    If exact date not found (weekends/holidays), uses most recent prior date.
+    Returns yield as decimal (e.g., 0.0411 for 4.11%).
+    Raises ValueError if no data available.
+    """
+    # First, try to get exact date
+    result = await db.execute(
+        select(TreasuryYield)
+        .where(TreasuryYield.yield_date == target_date)
+    )
+    yield_obj = result.scalar_one_or_none()
+    
+    if yield_obj:
+        return yield_obj.yield_value / 100.0  # Convert percentage to decimal
+    
+    # If not found, get most recent prior date
+    result = await db.execute(
+        select(TreasuryYield)
+        .where(TreasuryYield.yield_date <= target_date)
+        .order_by(TreasuryYield.yield_date.desc())
+        .limit(1)
+    )
+    yield_obj = result.scalar_one_or_none()
+    
+    if yield_obj:
+        return yield_obj.yield_value / 100.0  # Convert percentage to decimal
+    
+    # Try fetching from API for this date or recent dates
+    fetched = await fetch_treasury_yield(db, target_date)
+    if fetched:
+        return fetched.yield_value / 100.0
+    
+    # If still no data, try fetching latest available
+    fetched = await fetch_treasury_yield(db, None)
+    if fetched:
+        return fetched.yield_value / 100.0
+    
+    # Fallback: get Settings defaults and convert to approximate yield
+    # This is a last resort - ideally we should have Treasury data
+    settings = await get_settings(db)
+    # Use savings rate as fallback (divide by typical multiplier of 1.0)
+    fallback_rate = settings.savings_account_interest_rate
+    logger.warning(f"No Treasury yield data available for {target_date}, using fallback rate {fallback_rate}")
+    return fallback_rate
+
+
+async def sync_treasury_yields(
+    db: AsyncSession, start_date: date, end_date: date
+) -> int:
+    """Fetch and store Treasury yields for a date range.
+    
+    Returns count of new entries created.
+    Useful for backfilling historical data.
+    """
+    if not FRED_API_KEY:
+        logger.warning("FRED_API_KEY not set, cannot sync Treasury yields")
+        return 0
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            url = f"{FRED_API_BASE_URL}/series/observations"
+            params = {
+                "series_id": FRED_SERIES_ID,
+                "api_key": FRED_API_KEY,
+                "file_type": "json",
+                "observation_start": start_date.isoformat(),
+                "observation_end": end_date.isoformat(),
+                "sort_order": "asc",
+                "limit": 100000,  # FRED allows up to 100k observations
+            }
+            
+            response = await client.get(url, params=params, timeout=30.0)
+            response.raise_for_status()
+            data = response.json()
+            
+            observations = data.get("observations", [])
+            new_count = 0
+            
+            for obs in observations:
+                yield_str = obs.get("value", ".")
+                
+                # Skip missing data
+                if yield_str == "." or yield_str is None:
+                    continue
+                
+                try:
+                    yield_value = float(yield_str)
+                    obs_date_str = obs.get("date")
+                    obs_date = date.fromisoformat(obs_date_str)
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Error parsing observation {obs}: {e}")
+                    continue
+                
+                # Check if we already have this date
+                existing = await db.execute(
+                    select(TreasuryYield).where(TreasuryYield.yield_date == obs_date)
+                )
+                if existing.scalar_one_or_none():
+                    continue  # Skip if already exists
+                
+                # Create new entry
+                treasury_yield = TreasuryYield(
+                    yield_date=obs_date,
+                    yield_value=yield_value,
+                )
+                db.add(treasury_yield)
+                new_count += 1
+            
+            await db.commit()
+            logger.info(f"Synced {new_count} new Treasury yield entries from {start_date} to {end_date}")
+            return new_count
+            
+    except httpx.HTTPError as e:
+        logger.error(f"HTTP error syncing Treasury yields: {e}")
+        await db.rollback()
+        return 0
+    except Exception as e:
+        logger.error(f"Unexpected error syncing Treasury yields: {e}")
+        await db.rollback()
+        return 0
+
+
+async def set_multiplier(
+    db: AsyncSession, account_type: str, multiplier: float, effective_date: date | None = None
+) -> None:
+    """Update the multiplier for savings or college_savings account type.
+    
+    Creates a MultiplierHistory entry with the specified date (or today's date if not provided).
+    Updates Settings table for backward compatibility.
+    
+    Args:
+        db: Database session
+        account_type: "savings" or "college_savings"
+        multiplier: The multiplier value
+        effective_date: Optional date for back-dating. If None, uses today's date.
+    """
+    if account_type not in ("savings", "college_savings"):
+        raise ValueError("Multipliers only apply to savings and college_savings accounts")
+    
+    effective_date = effective_date or date.today()
+    
+    # Get current multiplier for the effective date to check if it changed
+    current_multiplier = await get_multiplier_for_date(db, account_type, effective_date)
+    
+    # Check if we already have an entry for this date
+    existing_result = await db.execute(
+        select(MultiplierHistory)
+        .where(
+            MultiplierHistory.account_type == account_type,
+            MultiplierHistory.date == effective_date,
+        )
+        .order_by(MultiplierHistory.created_at.desc())
+        .limit(1)
+    )
+    existing_entry = existing_result.scalar_one_or_none()
+    
+    if existing_entry:
+        # Update existing entry for this date
+        existing_entry.multiplier = multiplier
+    else:
+        # Create new history entry for the specified date
+        new_history = MultiplierHistory(
+            account_type=account_type,
+            date=effective_date,
+            multiplier=multiplier,
+        )
+        db.add(new_history)
+    
+    await db.commit()
+    
+    # Update Settings for backward compatibility (only if effective_date is today or in the future)
+    if effective_date >= date.today():
+        settings = await get_settings(db)
+        if account_type == "savings":
+            settings.savings_multiplier = multiplier
+        elif account_type == "college_savings":
+            settings.college_savings_multiplier = multiplier
+        db.add(settings)
+        await db.commit()
+
+
+async def get_multiplier_for_date(
+    db: AsyncSession, account_type: str, target_date: date
+) -> float:
+    """Get multiplier effective on a given date.
+    
+    Queries MultiplierHistory for most recent entry on or before target_date.
+    Falls back to Settings defaults if no history exists.
+    """
+    result = await db.execute(
+        select(MultiplierHistory)
+        .where(
+            MultiplierHistory.account_type == account_type,
+            MultiplierHistory.date <= target_date,
+        )
+        .order_by(MultiplierHistory.date.desc(), MultiplierHistory.created_at.desc())
+        .limit(1)
+    )
+    history = result.scalar_one_or_none()
+    if history:
+        return history.multiplier
+    
+    # Fallback to Settings defaults
+    settings = await get_settings(db)
+    if account_type == "savings":
+        return settings.savings_multiplier
+    elif account_type == "college_savings":
+        return settings.college_savings_multiplier
+    else:
+        return 1.0  # Default multiplier
 
 
 async def create_transaction(db: AsyncSession, tx: Transaction) -> Transaction:
@@ -786,23 +1212,11 @@ async def recalc_interest(db: AsyncSession, account_id: int) -> None:
     )
     await db.commit()
 
-    # Pre-load all rate history entries for efficient lookups
-    rate_history_result = await db.execute(
-        select(InterestRateHistory)
-        .where(InterestRateHistory.account_id == account_id)
-        .order_by(InterestRateHistory.date)
-    )
-    rate_history = list(rate_history_result.scalars().all())
-    
-    # Create a function to get rates for a given date (using pre-loaded history)
-    def get_rates_for_date(target_date: date) -> tuple[float, float]:
-        """Get rates for a date using pre-loaded history."""
-        # Find the most recent history entry on or before target_date
-        for entry in reversed(rate_history):
-            if entry.date <= target_date:
-                return (entry.interest_rate, entry.penalty_interest_rate)
-        # Fallback to current account rates if no history
-        return (account.interest_rate, account.penalty_interest_rate)
+    # Create a function to get rates for a given date (dynamically calculated)
+    # This ensures that when multipliers change historically, the recalculation uses the new values
+    async def get_rates_for_date(target_date: date) -> tuple[float, float]:
+        """Get rates for a date by dynamically calculating from Treasury yields and multipliers."""
+        return await get_interest_rate_for_date(db, account.account_type, target_date)
 
     # Single in-memory pass: Calculate all interest
     current_balance = 0.0
@@ -823,12 +1237,17 @@ async def recalc_interest(db: AsyncSession, account_id: int) -> None:
             # Calculate interest for all days between current_day and tx_day
             day = current_day
             while day < tx_day and day < today:
-                # Get historical rate for this day (in-memory lookup)
-                interest_rate, penalty_rate = get_rates_for_date(day)
+                # Get historical rate for this day (dynamically calculated)
+                interest_rate, penalty_rate = await get_rates_for_date(day)
                 
                 # Determine which rate to use based on balance
-                rate = interest_rate if current_balance >= 0 else penalty_rate
-                interest = current_balance * rate
+                annual_rate = interest_rate if current_balance >= 0 else penalty_rate
+                
+                # Convert annualized rate to daily rate using compound interest formula
+                # daily_rate = ((1 + annual_rate)^(1/365)) - 1
+                daily_rate = ((1 + annual_rate) ** (1/365)) - 1
+                
+                interest = current_balance * daily_rate
                 
                 if interest != 0:
                     # Interest transaction timestamped at start of next day
@@ -861,12 +1280,17 @@ async def recalc_interest(db: AsyncSession, account_id: int) -> None:
     if current_day and current_day < today:
         day = current_day
         while day < today:
-            # Get historical rate for this day (in-memory lookup)
-            interest_rate, penalty_rate = get_rates_for_date(day)
+            # Get historical rate for this day (dynamically calculated)
+            interest_rate, penalty_rate = await get_rates_for_date(day)
             
             # Determine which rate to use based on balance
-            rate = interest_rate if current_balance >= 0 else penalty_rate
-            interest = current_balance * rate
+            annual_rate = interest_rate if current_balance >= 0 else penalty_rate
+            
+            # Convert annualized rate to daily rate using compound interest formula
+            # daily_rate = ((1 + annual_rate)^(1/365)) - 1
+            daily_rate = ((1 + annual_rate) ** (1/365)) - 1
+            
+            interest = current_balance * daily_rate
             
             if interest != 0:
                 # Interest transaction timestamped at start of next day

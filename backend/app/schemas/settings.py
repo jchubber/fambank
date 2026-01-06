@@ -1,8 +1,7 @@
-from pydantic import BaseModel
-
 """Pydantic models for application configuration settings."""
 
 from pydantic import BaseModel
+from datetime import date, datetime
 
 
 class SettingsRead(BaseModel):
@@ -10,7 +9,12 @@ class SettingsRead(BaseModel):
     site_url: str
     savings_account_interest_rate: float
     college_savings_account_interest_rate: float
+    savings_multiplier: float
+    college_savings_multiplier: float
     savings_account_lockup_period_days: int
+    checking_penalty_interest_rate: float
+    savings_penalty_interest_rate: float
+    college_savings_penalty_interest_rate: float
     default_penalty_interest_rate: float
     default_cd_penalty_rate: float
     service_fee_amount: float
@@ -31,7 +35,12 @@ class SettingsUpdate(BaseModel):
     site_url: str | None = None
     savings_account_interest_rate: float | None = None
     college_savings_account_interest_rate: float | None = None
+    savings_multiplier: float | None = None
+    college_savings_multiplier: float | None = None
     savings_account_lockup_period_days: int | None = None
+    checking_penalty_interest_rate: float | None = None
+    savings_penalty_interest_rate: float | None = None
+    college_savings_penalty_interest_rate: float | None = None
     default_penalty_interest_rate: float | None = None
     default_cd_penalty_rate: float | None = None
     service_fee_amount: float | None = None
@@ -45,3 +54,24 @@ class SettingsUpdate(BaseModel):
     loans_ui_enabled: bool | None = None
     coupons_ui_enabled: bool | None = None
     messages_ui_enabled: bool | None = None
+
+
+class MultiplierUpdate(BaseModel):
+    account_type: str  # "savings" or "college_savings"
+    multiplier: float
+    effective_date: date | None = None  # Optional date for back-dating. If not provided, uses today's date.
+
+
+class MultiplierHistoryRead(BaseModel):
+    id: int
+    account_type: str
+    date: date
+    multiplier: float
+    created_at: datetime
+
+
+class TreasuryYieldRead(BaseModel):
+    id: int
+    yield_date: date
+    yield_value: float
+    created_at: datetime

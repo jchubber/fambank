@@ -86,12 +86,25 @@ interface RecurringCharge {
   active: boolean;
 }
 
+interface TreasuryYield {
+  id: number
+  yield_date: string
+  yield_value: number
+  created_at: string
+}
+
+interface Multipliers {
+  savings_multiplier: number
+  college_savings_multiplier: number
+}
+
 interface Props {
   token: string;
   apiUrl: string;
   permissions: string[];
   onLogout: () => void;
   currencySymbol: string;
+  isAdmin: boolean;
 }
 
 export default function ParentDashboard({
@@ -100,6 +113,7 @@ export default function ParentDashboard({
   permissions,
   onLogout,
   currencySymbol,
+  isAdmin,
 }: Props) {
   const [children, setChildren] = useState<Child[]>([]);
   const [ledger, setLedger] = useState<LedgerResponse | null>(null);
@@ -148,6 +162,10 @@ export default function ParentDashboard({
   const canDeleteRecurring = permissions.includes("delete_recurring_charge");
   const [rcAmount, setRcAmount] = useState("");
   const [rcType, setRcType] = useState("debit");
+  const [recalculatingAllInterest, setRecalculatingAllInterest] = useState(false);
+  const [recalculatingAccountInterest, setRecalculatingAccountInterest] = useState(false);
+  const [treasuryYield, setTreasuryYield] = useState<TreasuryYield | null>(null);
+  const [multipliers, setMultipliers] = useState<Multipliers | null>(null);
   const [rcMemo, setRcMemo] = useState("");
   const [rcInterval, setRcInterval] = useState("");
   const [rcNext, setRcNext] = useState("");
@@ -316,7 +334,21 @@ export default function ParentDashboard({
   useEffect(() => {
     fetchChildren();
     fetchPendingWithdrawals();
-  }, [fetchChildren, fetchPendingWithdrawals]);
+    // Fetch Treasury yield and multipliers
+    const fetchTreasuryYield = async () => {
+      const resp = await fetch(`${apiUrl}/settings/treasury-yields?limit=1`);
+      if (resp.ok) {
+        const yields = await resp.json() as TreasuryYield[];
+        if (yields.length > 0) setTreasuryYield(yields[0]);
+      }
+    };
+    const fetchMultipliers = async () => {
+      const resp = await fetch(`${apiUrl}/settings/multipliers`);
+      if (resp.ok) setMultipliers(await resp.json() as Multipliers);
+    };
+    fetchTreasuryYield();
+    fetchMultipliers();
+  }, [fetchChildren, fetchPendingWithdrawals, apiUrl]);
 
 
   const toggleFreeze = async (childId: number, frozen: boolean) => {
@@ -347,6 +379,36 @@ export default function ParentDashboard({
 
   return (
     <div className="container">
+      {isAdmin && (
+        <div style={{ marginBottom: '2rem' }}>
+          <button
+            onClick={async () => {
+              setRecalculatingAllInterest(true);
+              try {
+                const resp = await fetch(`${apiUrl}/admin/recalc-all-interest`, {
+                  method: 'POST',
+                  headers: { Authorization: `Bearer ${token}` },
+                });
+                if (resp.ok) {
+                  const data = await resp.json();
+                  showToast(`Interest recalculated for ${data.accounts_processed} account(s)`);
+                } else {
+                  const errorData = await resp.json().catch(() => null);
+                  showToast(errorData?.detail || 'Failed to recalculate interest', 'error');
+                }
+              } catch (error) {
+                showToast('Failed to recalculate interest', 'error');
+              } finally {
+                setRecalculatingAllInterest(false);
+              }
+            }}
+            disabled={recalculatingAllInterest}
+            style={{ marginBottom: '1rem' }}
+          >
+            {recalculatingAllInterest ? 'Recalculating...' : 'Recalculate Interest for All Accounts'}
+          </button>
+        </div>
+      )}
       {loadingWithdrawals ? (
         <p>Loading withdrawals...</p>
       ) : (
@@ -572,6 +634,11 @@ export default function ParentDashboard({
                 <p className="help-text">
                   Lockup period: {accounts.savings.lockup_period_days} days. 
                   Interest rate: {(accounts.savings.interest_rate * 100).toFixed(2)}%
+                  {treasuryYield && multipliers && (
+                    <span style={{ display: 'block', fontSize: '0.85em', marginTop: '0.25rem' }}>
+                      (Treasury: {treasuryYield.yield_value.toFixed(2)}% × Multiplier: {multipliers.savings_multiplier.toFixed(2)}x)
+                    </span>
+                  )}
                 </p>
               )}
             </div>
@@ -583,10 +650,57 @@ export default function ParentDashboard({
               </p>
               <p className="help-text">
                 Interest rate: {(accounts.college_savings.interest_rate * 100).toFixed(2)}%. 
+                {treasuryYield && multipliers && (
+                  <span style={{ display: 'block', fontSize: '0.85em', marginTop: '0.25rem' }}>
+                    (Treasury: {treasuryYield.yield_value.toFixed(2)}% × Multiplier: {multipliers.college_savings_multiplier.toFixed(2)}x)
+                  </span>
+                )}
                 Withdrawals are admin-only for educational expenses.
               </p>
             </div>
           </div>
+          
+          {ledger && accounts && selectedAccountId && (
+            <>
+              {(selectedAccountId === accounts.savings.id || selectedAccountId === accounts.college_savings.id) && (
+                <div style={{ marginBottom: '1rem' }}>
+                  <button
+                    onClick={async () => {
+                      if (selectedChild === null) return;
+                      setRecalculatingAccountInterest(true);
+                      try {
+                        const resp = await fetch(
+                          `${apiUrl}/children/${selectedChild}/accounts/${selectedAccountId}/recalc-interest`,
+                          {
+                            method: 'POST',
+                            headers: { Authorization: `Bearer ${token}` },
+                          }
+                        );
+                        if (resp.ok) {
+                          showToast('Interest recalculated successfully');
+                          await fetchAccounts(selectedChild);
+                          if (selectedAccountId) {
+                            await fetchLedger(selectedChild, selectedAccountId);
+                          }
+                        } else {
+                          const data = await resp.json().catch(() => null);
+                          showToast(data?.detail || 'Failed to recalculate interest', 'error');
+                        }
+                      } catch (error) {
+                        showToast('Failed to recalculate interest', 'error');
+                      } finally {
+                        setRecalculatingAccountInterest(false);
+                      }
+                    }}
+                    disabled={recalculatingAccountInterest}
+                    style={{ marginBottom: '1rem' }}
+                  >
+                    {recalculatingAccountInterest ? 'Recalculating...' : 'Recalculate Interest for This Account'}
+                  </button>
+                </div>
+              )}
+            </>
+          )}
           
           {ledger && accounts && (
             <>

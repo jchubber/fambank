@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import ConfirmModal from '../components/ConfirmModal'
 import EditSiteSettingsModal from '../components/EditSiteSettingsModal'
 import EditTransactionModal from '../components/EditTransactionModal'
+import EditMultipliersModal from '../components/EditMultipliersModal'
+import MultiplierHistoryChart from '../components/MultiplierHistoryChart'
 import LedgerTable, { type Transaction } from '../components/LedgerTable'
 import RunPromotionModal from '../components/RunPromotionModal'
 import AddParentModal from '../components/AddParentModal'
@@ -40,6 +42,8 @@ interface SiteSettings {
   site_url: string
   savings_account_interest_rate: number
   college_savings_account_interest_rate: number
+  savings_multiplier: number
+  college_savings_multiplier: number
   savings_account_lockup_period_days: number
   default_penalty_interest_rate: number
   default_cd_penalty_rate: number
@@ -52,12 +56,21 @@ interface SiteSettings {
   public_registration_disabled: boolean
 }
 
+interface TreasuryYield {
+  id: number
+  yield_date: string
+  yield_value: number
+  created_at: string
+}
+
 export default function AdminPanel({ token, apiUrl, onLogout, siteName, currencySymbol, onSettingsChange }: Props) {
   const [users, setUsers] = useState<User[]>([])
   const [children, setChildren] = useState<Child[]>([])
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [settings, setSettings] = useState<SiteSettings | null>(null)
+  const [treasuryYield, setTreasuryYield] = useState<TreasuryYield | null>(null)
   const [showSettingsModal, setShowSettingsModal] = useState(false)
+  const [showMultiplierModal, setShowMultiplierModal] = useState(false)
   const [showPromoModal, setShowPromoModal] = useState(false)
   const [showAddParent, setShowAddParent] = useState(false)
   const [selectedUser, setSelectedUser] = useState<User | null>(null)
@@ -86,6 +99,14 @@ export default function AdminPanel({ token, apiUrl, onLogout, siteName, currency
       const data = (await s.json()) as SiteSettings
       setSettings(data)
       if (onSettingsChange) onSettingsChange()
+    }
+    // Fetch current Treasury yield
+    const ty = await fetch(`${apiUrl}/settings/treasury-yields?limit=1`, { headers: uh })
+    if (ty.ok) {
+      const tyData = (await ty.json()) as TreasuryYield[]
+      if (tyData.length > 0) {
+        setTreasuryYield(tyData[0])
+      }
     }
   }
 
@@ -116,8 +137,30 @@ export default function AdminPanel({ token, apiUrl, onLogout, siteName, currency
           <h2>Site Settings</h2>
           <p>Name: {settings.site_name}</p>
           <p>Site URL: {settings.site_url}</p>
-          <p>Savings Account Interest Rate: {(settings.savings_account_interest_rate * 100).toFixed(2)}%</p>
-          <p>College Savings Account Interest Rate: {(settings.college_savings_account_interest_rate * 100).toFixed(2)}%</p>
+          {treasuryYield && (
+            <p>
+              <strong>Current Treasury Yield:</strong> {treasuryYield.yield_value.toFixed(2)}% 
+              (as of {new Date(treasuryYield.yield_date).toLocaleDateString()})
+            </p>
+          )}
+          <p>
+            <strong>Savings Account Multiplier:</strong> {settings.savings_multiplier.toFixed(2)}x
+            {treasuryYield && (
+              <span> → Calculated Rate: {(treasuryYield.yield_value * settings.savings_multiplier).toFixed(2)}%</span>
+            )}
+            <button 
+              onClick={() => setShowMultiplierModal(true)}
+              style={{ marginLeft: '0.5rem', fontSize: '0.9em' }}
+            >
+              Edit
+            </button>
+          </p>
+          <p>
+            <strong>College Savings Account Multiplier:</strong> {settings.college_savings_multiplier.toFixed(2)}x
+            {treasuryYield && (
+              <span> → Calculated Rate: {(treasuryYield.yield_value * settings.college_savings_multiplier).toFixed(2)}%</span>
+            )}
+          </p>
           <p>Savings Account Lockup Period: {settings.savings_account_lockup_period_days} days</p>
           <p>Penalty Interest Rate: {(settings.default_penalty_interest_rate * 100).toFixed(2)}%</p>
           <p>CD Penalty Rate: {(settings.default_cd_penalty_rate * 100).toFixed(2)}%</p>
@@ -131,8 +174,49 @@ export default function AdminPanel({ token, apiUrl, onLogout, siteName, currency
           </p>
           <p>Public Registration: {settings.public_registration_disabled ? 'Disabled' : 'Enabled'}</p>
           <button onClick={() => setShowSettingsModal(true)}>Edit</button>
+          <button 
+            onClick={async () => {
+              const resp = await fetch(`${apiUrl}/settings/treasury-yields/sync`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${token}` },
+              })
+              if (resp.ok) {
+                const data = await resp.json()
+                showToast(`Synced ${data.count} Treasury yield entries`)
+                fetchData()
+              } else {
+                showToast('Failed to sync Treasury yields', 'error')
+              }
+            }}
+            style={{ marginLeft: '0.5rem' }}
+          >
+            Sync Treasury Yields
+          </button>
         </div>
       )}
+      <h2>Multiplier History</h2>
+      <div style={{ marginBottom: '2rem' }}>
+        <MultiplierHistoryChart
+          token={token}
+          apiUrl={apiUrl}
+          accountType="savings"
+          onSaved={() => {
+            fetchData()
+            if (onSettingsChange) onSettingsChange()
+          }}
+        />
+      </div>
+      <div style={{ marginBottom: '2rem' }}>
+        <MultiplierHistoryChart
+          token={token}
+          apiUrl={apiUrl}
+          accountType="college_savings"
+          onSaved={() => {
+            fetchData()
+            if (onSettingsChange) onSettingsChange()
+          }}
+        />
+      </div>
       <h2>Promotions</h2>
       <button onClick={() => setShowPromoModal(true)}>Run Promotion</button>
       <h2>Users</h2>
@@ -419,6 +503,20 @@ export default function AdminPanel({ token, apiUrl, onLogout, siteName, currency
           apiUrl={apiUrl}
           onClose={() => setShowSettingsModal(false)}
           onSaved={fetchData}
+        />
+      )}
+      {showMultiplierModal && settings && treasuryYield && (
+        <EditMultipliersModal
+          settings={settings}
+          treasuryYield={treasuryYield}
+          token={token}
+          apiUrl={apiUrl}
+          onClose={() => setShowMultiplierModal(false)}
+          onSaved={() => {
+            setShowMultiplierModal(false)
+            fetchData()
+            if (onSettingsChange) onSettingsChange()
+          }}
         />
       )}
       {showPromoModal && (

@@ -94,10 +94,16 @@ export default function EditSiteSettingsModal({ settings, token, apiUrl, onClose
           <label>
             Savings Account Interest Rate (%)
             <input name="savings_account_interest_rate" type="number" step="0.01" value={form.savings_account_interest_rate} onChange={handleChange} required />
+            <small style={{ display: 'block', color: '#666', fontSize: '0.85em', marginTop: '0.25rem' }}>
+              ⚠️ Deprecated: Interest rates are now calculated from Treasury yields × multipliers. Use the "Edit" button next to multipliers in the Admin Panel to adjust rates.
+            </small>
           </label>
           <label>
             College Savings Account Interest Rate (%)
             <input name="college_savings_account_interest_rate" type="number" step="0.01" value={form.college_savings_account_interest_rate} onChange={handleChange} required />
+            <small style={{ display: 'block', color: '#666', fontSize: '0.85em', marginTop: '0.25rem' }}>
+              ⚠️ Deprecated: Interest rates are now calculated from Treasury yields × multipliers. Use the "Edit" button next to multipliers in the Admin Panel to adjust rates.
+            </small>
           </label>
           <label>
             Savings Account Lockup Period (days)

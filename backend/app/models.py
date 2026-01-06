@@ -103,8 +103,6 @@ class Account(SQLModel, table=True):
     child_id: int = Field(foreign_key="child.id")
     account_type: str = "checking"  # "checking", "savings", "college_savings"
     balance: float = 0.0
-    interest_rate: float = 0.01  # Daily rate for positive balances
-    penalty_interest_rate: float = 0.02  # Daily rate applied when balance < 0
     cd_penalty_rate: float = 0.1  # Penalty for early CD withdrawal
     lockup_period_days: Optional[int] = None  # Only used for savings accounts
     last_interest_applied: Optional[date] = None
@@ -114,19 +112,33 @@ class Account(SQLModel, table=True):
     overdraft_fee_charged: bool = False
 
     child: Child = Relationship(back_populates="accounts")
-    rate_history: List["InterestRateHistory"] = Relationship(back_populates="account")
 
 
 class InterestRateHistory(SQLModel, table=True):
-    """Historical record of interest rate changes for an account."""
+    """Historical record of interest rate changes for an account type (global)."""
     id: Optional[int] = Field(default=None, primary_key=True)
-    account_id: int = Field(foreign_key="account.id")
+    account_type: str  # "checking", "savings", "college_savings"
     date: date  # Date when this rate became effective
     interest_rate: float  # Daily rate for positive balances
     penalty_interest_rate: float  # Daily rate for negative balances
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
-    account: Account = Relationship(back_populates="rate_history")
+
+class TreasuryYield(SQLModel, table=True):
+    """Daily Treasury yield data from FRED API (series DGS1)."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    yield_date: date = Field(unique=True, index=True)  # Date of the yield observation
+    yield_value: float  # Yield as percentage (e.g., 4.11 for 4.11%)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class MultiplierHistory(SQLModel, table=True):
+    """Historical record of multiplier changes for interest rate calculation."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    account_type: str  # "savings" or "college_savings"
+    date: date  # Date when this multiplier became effective
+    multiplier: float  # Multiplier value (e.g., 2.0 for 2x)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class Transaction(SQLModel, table=True):
@@ -251,10 +263,15 @@ class Settings(SQLModel, table=True):
     id: Optional[int] = Field(default=1, primary_key=True)
     site_name: str = "Uncle Jon's Bank"
     site_url: str = "http://localhost:5173"
-    savings_account_interest_rate: float = 0.01
-    college_savings_account_interest_rate: float = 0.01
+    savings_account_interest_rate: float = 0.01  # Deprecated, kept for backward compatibility/fallback
+    college_savings_account_interest_rate: float = 0.01  # Deprecated, kept for backward compatibility/fallback
+    savings_multiplier: float = 1.0  # Multiplier for savings account interest rates (Treasury Yield × Multiplier)
+    college_savings_multiplier: float = 1.0  # Multiplier for college savings account interest rates (Treasury Yield × Multiplier)
     savings_account_lockup_period_days: int = 30
-    default_penalty_interest_rate: float = 0.02
+    checking_penalty_interest_rate: float = 0.02
+    savings_penalty_interest_rate: float = 0.02
+    college_savings_penalty_interest_rate: float = 0.02
+    default_penalty_interest_rate: float = 0.02  # Deprecated, kept for backward compatibility
     default_cd_penalty_rate: float = 0.1
     service_fee_amount: float = 0.0
     service_fee_is_percentage: bool = False

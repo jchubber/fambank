@@ -41,6 +41,7 @@ from app.crud import (
     apply_service_fee,
     apply_overdraft_fee,
     process_loan_interest,
+    fetch_treasury_yield,
 )
 from app.models import Child
 from app.acl import ALL_PERMISSIONS
@@ -98,6 +99,13 @@ async def on_startup():
         from app.crud import ensure_education_content
 
         await ensure_education_content(session)
+        # Fetch latest Treasury yield on startup
+        from app.crud import fetch_treasury_yield
+        try:
+            await fetch_treasury_yield(session, None)  # None = fetch latest available
+            logger.info("Treasury yield data fetched on startup")
+        except Exception as e:
+            logger.warning(f"Failed to fetch Treasury yield on startup: {e}")
     # Run the long‑lived interest calculation loop in the background.
     asyncio.create_task(daily_interest_task())
 
@@ -109,14 +117,25 @@ async def daily_interest_task():
     while True:
         try:
             async with async_session() as session:
-                # Process any recurring charges that are due.
-                await process_due_recurring_charges(session)
+                try:
+                    # Process any recurring charges that are due.
+                    await process_due_recurring_charges(session)
+                    # Fetch latest Treasury yield data before recalculating interest
+                    await fetch_treasury_yield(session, None)  # None = fetch latest available
+                except Exception as e:
+                    logger.warning(f"Error in daily task setup (recurring charges/Treasury fetch): {e}")
+                    await session.rollback()
+                
                 settings = await get_settings(session)
                 accounts = await get_all_accounts(session)
                 # Recalculate interest for savings and college_savings accounts only.
                 for account in accounts:
                     if account.account_type in ("savings", "college_savings"):
-                        await recalc_interest(session, account.id)
+                        try:
+                            await recalc_interest(session, account.id)
+                        except Exception as e:
+                            logger.error(f"Error recalculating interest for account {account.id}: {e}")
+                            await session.rollback()
                 accounts = await get_all_accounts(session)
                 today = date.today()
                 # Apply monthly service fees and overdraft penalties.

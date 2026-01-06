@@ -32,7 +32,13 @@ from .withdrawal import (
 )
 from .permission import PermissionRead, PermissionsUpdate
 from .cd import CDCreate, CDRead
-from .settings import SettingsRead, SettingsUpdate
+from .settings import (
+    SettingsRead,
+    SettingsUpdate,
+    MultiplierUpdate,
+    MultiplierHistoryRead,
+    TreasuryYieldRead,
+)
 from .recurring import (
     RecurringChargeCreate,
     RecurringChargeRead,
@@ -91,6 +97,9 @@ __all__ = [
     "CDRead",
     "SettingsRead",
     "SettingsUpdate",
+    "MultiplierUpdate",
+    "MultiplierHistoryRead",
+    "TreasuryYieldRead",
     "RecurringChargeCreate",
     "RecurringChargeRead",
     "RecurringChargeUpdate",

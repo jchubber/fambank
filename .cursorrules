@@ -1,0 +1,32 @@
+# Cursor Rules for Bank FBDM Project
+
+## Docker-First Development
+
+**IMPORTANT: Always check if the project runs in Docker before executing commands.**
+
+Before running any Python scripts, database commands, or backend operations:
+1. Check for `docker-compose.yml` or `Dockerfile` files in the project
+2. If Docker containers are running, execute commands inside the containers using:
+   ```bash
+   docker compose exec <service> <command>
+   ```
+3. Do NOT install dependencies locally or run scripts directly on the host machine if the project uses Docker
+4. Use `docker compose ps` to check which containers are running
+5. The backend service is typically named `backend` in docker-compose.yml
+
+Example: Instead of `python3 script.py`, use `docker compose exec backend python3 script.py`
+
+## Frontend Container Rebuilds
+
+**IMPORTANT: Rebuild the frontend container when changes require it.**
+
+If you make changes to frontend code (React/TypeScript files, package.json, etc.) that require a rebuild:
+1. Rebuild the frontend container using:
+   ```bash
+   docker compose up -d --build frontend
+   ```
+2. This ensures the changes take effect, especially for production builds or when dependencies change
+3. The frontend service is named `frontend` in docker-compose.yml
+
+Example: After modifying React components or TypeScript files, run `docker compose up -d --build frontend`
+

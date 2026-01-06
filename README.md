@@ -25,13 +25,13 @@ The goal is to teach kids about money through experience — without handing ove
 ### 💸 Banking & Ledger
 - **Multiple account types per child**:
   - **Checking Account**: Regular account for everyday transactions. No interest earned. Used as the default account for features like CDs, loans, and recurring charges.
-  - **Savings Account**: Earns daily interest at an admin-configurable rate. Has a lockup period (configurable by admin) that restricts withdrawals to funds deposited before the lockup period. Shows both total balance and available balance (amount that can be withdrawn).
-  - **College Savings Account**: Earns daily interest at a separate admin-configurable rate (different from savings account rate). Funds can only be withdrawn by admins for educational expenses. Children can see their balance but cannot request withdrawals.
+  - **Savings Account**: Earns daily interest calculated from U.S. Treasury yield data multiplied by an admin-configurable multiplier. Has a lockup period (configurable by admin) that restricts withdrawals to funds deposited before the lockup period. Shows both total balance and available balance (amount that can be withdrawn).
+  - **College Savings Account**: Earns daily interest calculated from U.S. Treasury yield data multiplied by a separate admin-configurable multiplier (different from savings account multiplier). Funds can only be withdrawn by admins for educational expenses. Children can see their balance but cannot request withdrawals.
 - Children can view their total balance across all accounts, as well as individual account balances.
 - Parents and children can filter transactions by account type.
 - Parents can back-date transactions and account creation dates when adding new entries (useful for recording past activity or setting up accounts retroactively).
 - Ability to accept offers on Certificates of Deposit (CDs) given by parents (pays into checking account).
-- Daily **compound interest** on savings and college savings accounts, with optional **bonus tiers** or promotions (Parents can change interest rates at any time)
+- Daily **compound interest** on savings and college savings accounts, calculated from real-time U.S. Treasury yield data (1-Year Constant Maturity Rate) multiplied by admin-configurable multipliers. Admins can adjust multipliers at any time to control interest rates.
 - Full ledger of transactions: amount, memo, date, creator, type, account type, promo ID (optional)
 - Monetary amounts display a configurable currency symbol (default `$`).
 
@@ -106,7 +106,9 @@ Built with **FastAPI** and **SQLModel**, the backend provides:
 - `AccountSettings`: Interest rates, lock flags, etc. (deprecated in favor of per-account settings)
 - `Coupon`: Redeemable reward code
 - `CouponRedemption`: Record of a coupon claim
-- `Settings`: Site-wide configuration including savings account interest rate, college savings account interest rate, and savings account lockup period
+- `Settings`: Site-wide configuration including savings account multiplier, college savings account multiplier, and savings account lockup period
+- `TreasuryYield`: Daily Treasury yield data fetched from the FRED API (series DGS1)
+- `MultiplierHistory`: Historical record of multiplier changes for interest rate calculation
 - `ChildUserLink`: Associates guardians and children (many-to-many)
 - `Loan`: Parent-approved loans for children
 - `LoanTransaction`: Payment and interest ledger for loans
@@ -213,7 +215,7 @@ interface. The React app checks your role by calling the `/users/me` endpoint in
 `frontend/src/App.tsx`; if it returns an account with the `admin` role, the
 admin panel is displayed.
 
-Admins can configure site-wide settings—like the site name, base URL for shareable links, currency symbol, interest rates, and fees—through the admin panel.
+Admins can configure site-wide settings—like the site name, base URL for shareable links, currency symbol, interest rate multipliers (which multiply Treasury yields to determine account interest rates), and fees—through the admin panel. The system automatically fetches daily Treasury yield data from the Federal Reserve Economic Data (FRED) API.
 
 ## 🧪 Testing
 
@@ -261,9 +263,14 @@ Create a `.env` file inside the `backend` directory with at least:
 SECRET_KEY=your-secret-key
 ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=30
+FRED_API_KEY=your-fred-api-key
 ```
 
-These are used for JWT authentication.
+- `SECRET_KEY`, `ALGORITHM`, and `ACCESS_TOKEN_EXPIRE_MINUTES` are used for JWT authentication.
+- `FRED_API_KEY` is used to fetch Treasury yield data from the Federal Reserve Economic Data (FRED) API. 
+  - Get a free API key at: https://fred.stlouisfed.org/docs/api/api_key.html
+  - The system uses series DGS1 (1-Year Treasury Constant Maturity Rate) to calculate interest rates
+  - If not provided, the system will use a default development key (not recommended for production)
 
 ## Bringing up backend / frontend separately
 

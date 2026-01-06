@@ -9,6 +9,7 @@ sequence and purpose of each block.
 
 import os
 import logging
+from datetime import date, timedelta
 from sqlmodel import SQLModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
@@ -46,6 +47,8 @@ async def create_db_and_tables() -> None:
         UserPermissionLink,
         Settings,
         Message,
+        TreasuryYield,
+        MultiplierHistory,
     )
 
     async with engine.begin() as conn:
@@ -298,6 +301,198 @@ async def create_db_and_tables() -> None:
                         WHERE account_id IS NULL
                     """)
                 )
+        
+        # Migration: Convert InterestRateHistory from account-level to global (by account_type)
+        # Check if InterestRateHistory table exists and has old structure (account_id)
+        if await has_column("interestratehistory", "account_id"):
+            # Step 1: Migrate existing rate history data to global structure
+            # Get all existing history entries grouped by account_type
+            history_result = await conn.execute(
+                text("""
+                    SELECT irh.account_id, irh.date, irh.interest_rate, irh.penalty_interest_rate,
+                           a.account_type
+                    FROM interestratehistory irh
+                    JOIN account a ON irh.account_id = a.id
+                    ORDER BY a.account_type, irh.date, irh.created_at
+                """)
+            )
+            history_rows = history_result.fetchall()
+            
+            # Create temporary table for new structure
+            await conn.execute(
+                text("""
+                    CREATE TABLE IF NOT EXISTS interestratehistory_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        account_type VARCHAR NOT NULL,
+                        date DATE NOT NULL,
+                        interest_rate FLOAT NOT NULL,
+                        penalty_interest_rate FLOAT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+            )
+            
+            # Migrate data: for each account_type/date combination, keep the most recent entry
+            seen_keys = {}  # Track (account_type, date) combinations we've already added
+            for row in history_rows:
+                account_id, hist_date, interest_rate, penalty_rate, account_type = row
+                key = (account_type, hist_date)
+                
+                # Only keep the first (most recent due to ordering) entry for each account_type/date
+                if key not in seen_keys:
+                    await conn.execute(
+                        text("""
+                            INSERT INTO interestratehistory_new 
+                            (account_type, date, interest_rate, penalty_interest_rate, created_at)
+                            VALUES (:account_type, :date, :interest_rate, :penalty_interest_rate, 
+                                    (SELECT created_at FROM interestratehistory 
+                                     WHERE account_id = :account_id AND date = :date 
+                                     ORDER BY created_at DESC LIMIT 1))
+                        """),
+                        {
+                            "account_type": account_type,
+                            "date": hist_date,
+                            "interest_rate": interest_rate,
+                            "penalty_interest_rate": penalty_rate,
+                            "account_id": account_id
+                        }
+                    )
+                    seen_keys[key] = True
+            
+            # If no history exists, initialize from Settings defaults
+            settings_result = await conn.execute(
+                text("""
+                    SELECT savings_account_interest_rate, college_savings_account_interest_rate,
+                           default_penalty_interest_rate
+                    FROM settings WHERE id = 1
+                """)
+            )
+            settings_row = settings_result.fetchone()
+            if settings_row:
+                savings_rate = settings_row[0] if settings_row[0] is not None else 0.01
+                college_rate = settings_row[1] if settings_row[1] is not None else 0.01
+                penalty_rate = settings_row[2] if settings_row[2] is not None else 0.02
+            else:
+                savings_rate = 0.01
+                college_rate = 0.01
+                penalty_rate = 0.02
+            
+            # Initialize global history from Settings if no history exists
+            for account_type in ["savings", "college_savings"]:
+                type_history = await conn.execute(
+                    text("SELECT COUNT(*) FROM interestratehistory_new WHERE account_type = :account_type"),
+                    {"account_type": account_type}
+                )
+                if type_history.scalar() == 0:
+                    # Use a date in the past (30 days ago) to ensure it's before today
+                    init_date = date.today() - timedelta(days=30)
+                    rate = savings_rate if account_type == "savings" else college_rate
+                    await conn.execute(
+                        text("""
+                            INSERT INTO interestratehistory_new 
+                            (account_type, date, interest_rate, penalty_interest_rate)
+                            VALUES (:account_type, :date, :rate, :penalty_rate)
+                        """),
+                        {
+                            "account_type": account_type,
+                            "date": init_date.isoformat(),
+                            "rate": rate,
+                            "penalty_rate": penalty_rate
+                        }
+                    )
+            
+            # Drop old table and rename new one
+            await conn.execute(text("DROP TABLE interestratehistory"))
+            await conn.execute(text("ALTER TABLE interestratehistory_new RENAME TO interestratehistory"))
+        
+        # Add new penalty rate columns to settings if they don't exist
+        if not await has_column("settings", "checking_penalty_interest_rate"):
+            await conn.execute(
+                text("ALTER TABLE settings ADD COLUMN checking_penalty_interest_rate FLOAT DEFAULT 0.02")
+            )
+            # Initialize from default_penalty_interest_rate if it exists
+            await conn.execute(
+                text("""
+                    UPDATE settings 
+                    SET checking_penalty_interest_rate = default_penalty_interest_rate
+                    WHERE checking_penalty_interest_rate = 0.02 AND default_penalty_interest_rate IS NOT NULL
+                """)
+            )
+        if not await has_column("settings", "savings_penalty_interest_rate"):
+            await conn.execute(
+                text("ALTER TABLE settings ADD COLUMN savings_penalty_interest_rate FLOAT DEFAULT 0.02")
+            )
+            await conn.execute(
+                text("""
+                    UPDATE settings 
+                    SET savings_penalty_interest_rate = default_penalty_interest_rate
+                    WHERE savings_penalty_interest_rate = 0.02 AND default_penalty_interest_rate IS NOT NULL
+                """)
+            )
+        if not await has_column("settings", "college_savings_penalty_interest_rate"):
+            await conn.execute(
+                text("ALTER TABLE settings ADD COLUMN college_savings_penalty_interest_rate FLOAT DEFAULT 0.02")
+            )
+            await conn.execute(
+                text("""
+                    UPDATE settings 
+                    SET college_savings_penalty_interest_rate = default_penalty_interest_rate
+                    WHERE college_savings_penalty_interest_rate = 0.02 AND default_penalty_interest_rate IS NOT NULL
+                """)
+            )
+        
+        # Remove interest_rate and penalty_interest_rate columns from account table if they exist
+        # Note: SQLite doesn't support DROP COLUMN directly, so we'll need to recreate the table
+        # However, for safety, we'll check if columns exist and note that they're deprecated
+        # The actual column removal would require a more complex migration (recreate table)
+        # For now, we'll leave them in place but they won't be used by the application code
+        
+        # Add multiplier columns to settings table
+        if not await has_column("settings", "savings_multiplier"):
+            await conn.execute(
+                text("ALTER TABLE settings ADD COLUMN savings_multiplier FLOAT DEFAULT 1.0")
+            )
+        if not await has_column("settings", "college_savings_multiplier"):
+            await conn.execute(
+                text("ALTER TABLE settings ADD COLUMN college_savings_multiplier FLOAT DEFAULT 1.0")
+            )
+        
+        # Create TreasuryYield and MultiplierHistory tables if they don't exist
+        # These are new tables, so SQLModel.metadata.create_all should handle them,
+        # but we'll ensure they exist explicitly
+        treasury_table_check = await conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='treasuryyield'")
+        )
+        if not treasury_table_check.fetchone():
+            await conn.execute(
+                text("""
+                    CREATE TABLE treasuryyield (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        yield_date DATE NOT NULL UNIQUE,
+                        yield_value FLOAT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+            )
+            await conn.execute(
+                text("CREATE INDEX IF NOT EXISTS idx_treasuryyield_date ON treasuryyield(yield_date)")
+            )
+        
+        multiplier_table_check = await conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='multiplierhistory'")
+        )
+        if not multiplier_table_check.fetchone():
+            await conn.execute(
+                text("""
+                    CREATE TABLE multiplierhistory (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        account_type VARCHAR NOT NULL,
+                        date DATE NOT NULL,
+                        multiplier FLOAT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+            )
 
 
 async def get_session() -> AsyncSession:
